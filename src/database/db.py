@@ -58,14 +58,21 @@ class Database:
             )
         """)
 
-        # Таблица key_store (для спринта 2)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS key_store (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 key_type TEXT NOT NULL,
-                salt BLOB,
-                hash BLOB,
-                params TEXT
+                key_data TEXT NOT NULL,
+                version INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS master_key (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -78,7 +85,7 @@ class Database:
         self.conn.commit()
 
         # Установка версии схемы для будущих миграций (DB-3)
-        cursor.execute("PRAGMA user_version = 1")
+        cursor.execute("PRAGMA user_version = 2")
 
         print("Таблицы успешно созданы")
 
@@ -102,3 +109,56 @@ class Database:
 
         self.conn.commit()
         print(f"Добавлено {len(test_data)} тестовых записей")
+
+    def migrate_if_needed(self):
+        """Проверка и обновление схемы базы данных"""
+        if not self.conn:
+            self.connect()
+
+        cursor = self.conn.cursor()
+
+        cursor.execute("PRAGMA user_version")
+        version = cursor.fetchone()[0]
+
+        if version < 2:
+            try:
+                cursor.execute("ALTER TABLE key_store ADD COLUMN version INTEGER DEFAULT 1")
+            except:
+                pass
+
+            cursor.execute("PRAGMA user_version = 2")
+            self.conn.commit()
+            print("База данных обновлена до версии 2")
+
+    def save_entry(self, entry_id, entry_data):
+        """Сохранение записи в базу данных"""
+        cursor = self.conn.cursor()
+
+        if entry_id is None:
+            cursor.execute("""
+                INSERT INTO vault_entries (title, username, encrypted_password, url, notes)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                entry_data["title"],
+                entry_data["username"],
+                entry_data["encrypted_password"],
+                entry_data["url"],
+                entry_data["notes"]
+            ))
+            self.conn.commit()  # важно!
+            return cursor.lastrowid
+        else:
+            cursor.execute("""
+                UPDATE vault_entries 
+                SET title=?, username=?, encrypted_password=?, url=?, notes=?
+                WHERE id=?
+            """, (
+                entry_data["title"],
+                entry_data["username"],
+                entry_data["encrypted_password"],
+                entry_data["url"],
+                entry_data["notes"],
+                entry_id
+            ))
+            self.conn.commit()  # важно!
+            return entry_id

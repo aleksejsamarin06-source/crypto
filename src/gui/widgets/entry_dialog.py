@@ -2,6 +2,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout,
                                QLineEdit, QTextEdit, QDialogButtonBox,
                                QMessageBox, QWidget)
 from PySide6.QtCore import Qt
+from src.gui.widgets.password_entry import PasswordEntry
 
 
 class EntryDialog(QDialog):
@@ -26,8 +27,7 @@ class EntryDialog(QDialog):
 
         self.title_edit = QLineEdit()
         self.username_edit = QLineEdit()
-        self.password_edit = QLineEdit()
-        self.password_edit.setEchoMode(QLineEdit.Password)
+        self.password_edit = PasswordEntry()
         self.url_edit = QLineEdit()
         self.notes_edit = QTextEdit()
         self.notes_edit.setMaximumHeight(100)
@@ -61,13 +61,18 @@ class EntryDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", "Название обязательно")
             return
 
+        password = self.password_edit.text().strip()
+
         self.result_data = {
             "title": title,
             "username": self.username_edit.text().strip(),
-            "password": self.password_edit.text().strip(),
+            "password": password,  # сохраняем пароль
             "url": self.url_edit.text().strip(),
             "notes": self.notes_edit.toPlainText().strip()
         }
+
+        self.password_edit.clear()
+
         self.accept()
 
     def show(self):
