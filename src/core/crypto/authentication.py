@@ -20,6 +20,7 @@ class Authentication:
             return False
 
         cursor = self.db.conn.cursor()
+        # Читаем хэш из БД
         cursor.execute(
             "SELECT key_data FROM key_store WHERE key_type = 'auth_hash' ORDER BY version DESC LIMIT 1"
         )
@@ -29,10 +30,10 @@ class Authentication:
             return False
 
         stored_hash = result[0]
-
+        # Проверяем пароль через Argon2
         if self.key_derivation.verify_password(password, stored_hash):
             self.failed_attempts = 0
-
+            # Читаем соль из БД
             cursor.execute(
                 "SELECT key_data FROM key_store WHERE key_type = 'enc_salt'"
             )
@@ -54,8 +55,8 @@ class Authentication:
             if salt_result and params_result:
                 salt = bytes.fromhex(salt_result[0]) if isinstance(salt_result[0], str) else salt_result[0]
                 params = json.loads(params_result[0])
-                key, _, _ = self.key_derivation.derive_encryption_key(password, salt)
-                self.key_storage.store_key(key)
+                key, _, _ = self.key_derivation.derive_encryption_key(password, salt) # Создаём ключ через PBKDF2 (вызов key_derivation)
+                self.key_storage.store_key(key) # Сохраняем ключ в памяти (key_storage)
 
                 self.session_start = time.time()
 
@@ -70,7 +71,7 @@ class Authentication:
 
     def logout(self):
         """Выход из системы"""
-        self.key_storage.clear()
+        self.key_storage.clear() # CACHE-4 - вызывает затирание ключа
         self.session_start = None
         event_system.publish("user_logged_out", {
             "timestamp": time.time()

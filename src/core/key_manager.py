@@ -2,7 +2,6 @@ import os
 import hashlib
 import binascii
 from src.core.crypto.placeholder import AES256Placeholder
-import ctypes
 
 class KeyManager:
     def __init__(self):

@@ -1,4 +1,3 @@
-from src.database.models import AuditLog
 from src.core.events import event_system
 import datetime
 

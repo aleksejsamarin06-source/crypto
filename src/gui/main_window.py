@@ -13,7 +13,8 @@ import os
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QTableWidget, QTableWidgetItem, QStatusBar,
                                QMenuBar, QMenu, QMessageBox, QHeaderView)
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtCore import QCoreApplication
 from src.gui.widgets.entry_dialog import EntryDialog
 
 
@@ -39,6 +40,10 @@ class MainWindow(QMainWindow):
         self.inactivity_timer.setInterval(60000)  # проверка каждую минуту
         self.inactivity_timer.timeout.connect(self.check_inactivity)
         self.inactivity_timer.start()
+
+        app = QCoreApplication.instance()
+        if app:
+            app.applicationStateChanged.connect(self.on_application_state_changed)
 
     def setup_menu(self):
         menubar = self.menuBar()
@@ -133,6 +138,11 @@ class MainWindow(QMainWindow):
                     print("Ключ шифрования установлен")
                 else:
                     print("ОШИБКА: ключ не получен")
+
+                self.key_storage = KeyStorage()
+                self.key_storage.store_key(encryption_key)
+
+                print("Ключ шифрования установлен и сохранён в key_storage")
 
                 self.current_db_path = file_path
                 print(f"Путь сохранён в self.current_db_path: {self.current_db_path}")
@@ -358,7 +368,7 @@ class MainWindow(QMainWindow):
     def about(self):
         QMessageBox.information(
             self, "О программе",
-            "CryptoSafe Manager\nВерсия: 0.1.0 (Sprint 1)\n\nМенеджер паролей с открытым кодом"
+            "CryptoSafe Manager\nВерсия: 0.2.0 (Sprint 2)\n\nМенеджер паролей с открытым кодом"
         )
 
     def check_first_run(self):
@@ -453,3 +463,21 @@ class MainWindow(QMainWindow):
 
         if dialog.exec():
             self.lock_vault()
+
+    def on_application_state_changed(self, state):
+        """Событие изменения состояния приложения"""
+        print(f"Состояние приложения изменилось: {state}")  # отладка
+
+        if state == Qt.ApplicationInactive:
+            print("Приложение стало неактивным - блокируем")
+            if hasattr(self, 'key_storage') and self.key_storage:
+                print("key_storage существует, очищаем")
+                self.key_storage.clear()
+                self.key_manager.current_key = None
+                self.entries_data = {}
+                self.table.setRowCount(0)
+                self.status_bar.showMessage("Статус: Хранилище заблокировано")
+            else:
+                print("key_storage не существует")
+        else:
+            print(f"Другое состояние: {state}")

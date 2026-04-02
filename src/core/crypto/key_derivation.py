@@ -4,7 +4,6 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 import os
 import secrets
-import base64
 
 
 class KeyDerivation:
@@ -49,7 +48,7 @@ class KeyDerivation:
             backend=default_backend()
         )
 
-        key = kdf.derive(password.encode('utf-8'))
+        key = kdf.derive(password.encode('utf-8')) # ключ создаётся в памяти
 
         # Добавляем параметры PBKDF2
         params = {
@@ -59,14 +58,13 @@ class KeyDerivation:
             'version': 1
         }
 
-        return key, salt, params
+        return key, salt, params # сам ключ не сохраняется, только соль и параметры
 
     def verify_password(self, password: str, stored_hash: str) -> bool:
         """Проверка пароля по сохраненному хэшу Argon2"""
         try:
             return self.argon2_hasher.verify(stored_hash, password)
         except:
-            # Фиктивная проверка за константное время для защиты от атак по времени
             secrets.compare_digest(b'dummy', b'dummy')
             return False
 
