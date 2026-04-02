@@ -144,7 +144,7 @@ class Database:
                 entry_data["url"],
                 entry_data["notes"]
             ))
-            self.conn.commit()  # важно!
+            self.conn.commit()
             return cursor.lastrowid
         else:
             cursor.execute("""
@@ -159,5 +159,5 @@ class Database:
                 entry_data["notes"],
                 entry_id
             ))
-            self.conn.commit()  # важно!
+            self.conn.commit()
             return entry_id

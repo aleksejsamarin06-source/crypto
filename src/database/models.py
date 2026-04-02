@@ -25,4 +25,4 @@ class AuditLog:
         self.timestamp = datetime.datetime.now()
         self.entry_id = entry_id
         self.details = details
-        self.signature = signature  
+        self.signature = signature
