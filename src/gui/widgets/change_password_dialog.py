@@ -2,6 +2,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QLineEdit,
                                QPushButton, QMessageBox, QHBoxLayout, QProgressBar)
 from PySide6.QtCore import Qt, QTimer
 from src.core.crypto.key_derivation import KeyDerivation
+from src.core.vault.encryption_service import AESGCMEncryption
 from src.database.db import Database
 import json
 
@@ -16,6 +17,7 @@ class ChangePasswordDialog(QDialog):
         self.db_path = db_path
         self.old_key = old_key
         self.key_derivation = KeyDerivation()
+        self.crypto = AESGCMEncryption()
 
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
@@ -108,23 +110,25 @@ class ChangePasswordDialog(QDialog):
             db.connect()
             cursor = db.conn.cursor()
 
-            cursor.execute("SELECT id, encrypted_password FROM vault_entries WHERE encrypted_password IS NOT NULL")
+            # Получаем все записи (encrypted_data вместо encrypted_password)
+            cursor.execute("SELECT id, encrypted_data FROM vault_entries")
             rows = cursor.fetchall()
             total = len(rows)
 
-            # Создаём новые ключи ДО цикла
             new_password = self.new_password.text()
             new_auth = self.key_derivation.create_auth_hash(new_password)
             new_key, new_salt, new_params = self.key_derivation.derive_encryption_key(new_password)
 
             if total > 0:
-                for i, (entry_id, old_encrypted) in enumerate(rows):
-                    if old_encrypted:
-                        decrypted = self.key_derivation.decrypt_with_key(old_encrypted, self.old_key)
-                        new_encrypted = self.key_derivation.encrypt_with_key(decrypted, new_key)
+                for i, (entry_id, old_encrypted_blob) in enumerate(rows):
+                    if old_encrypted_blob:
+                        # Расшифровываем старым ключом
+                        decrypted_data = self.crypto.decrypt_entry(old_encrypted_blob, self.old_key)
+                        # Шифруем новым ключом
+                        new_encrypted_blob = self.crypto.encrypt_entry(decrypted_data, new_key)
                         cursor.execute(
-                            "UPDATE vault_entries SET encrypted_password=? WHERE id=?",
-                            (new_encrypted, entry_id)
+                            "UPDATE vault_entries SET encrypted_data=? WHERE id=?",
+                            (new_encrypted_blob, entry_id)
                         )
                     progress = int((i + 1) / total * 100)
                     self.progress.setValue(progress)

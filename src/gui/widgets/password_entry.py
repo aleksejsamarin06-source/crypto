@@ -1,9 +1,12 @@
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLineEdit, QPushButton
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
+from PySide6.QtCore import Signal
 
 
 class PasswordEntry(QWidget):
+    textChanged = Signal(str)
+
     def __init__(self, parent=None, placeholder=""):
         super().__init__(parent)
 
@@ -16,6 +19,7 @@ class PasswordEntry(QWidget):
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setPlaceholderText(placeholder)
+        self.password_input.textChanged.connect(self._on_text_changed)
 
         self.toggle_button = QPushButton("👁")
         self.toggle_button.setFixedSize(25, 23)
@@ -24,6 +28,9 @@ class PasswordEntry(QWidget):
 
         layout.addWidget(self.password_input)
         layout.addWidget(self.toggle_button)
+
+    def _on_text_changed(self, text):
+        self.textChanged.emit(text)
 
     def toggle_visibility(self, checked):
         if checked:

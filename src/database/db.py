@@ -24,14 +24,10 @@ class Database:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS vault_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                username TEXT,
-                encrypted_password TEXT,
-                url TEXT,
-                notes TEXT,
-                tags TEXT,
+                encrypted_data BLOB NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                tags TEXT
             )
         """)
 
@@ -75,15 +71,16 @@ class Database:
             )
         """)
 
+        # Индексы для vault_entries
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vault_created ON vault_entries(created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vault_updated ON vault_entries(updated_at)")
+
         # Индексы
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vault_title ON vault_entries(title)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vault_tags ON vault_entries(tags)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_entry_id ON audit_log(entry_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)")
 
         self.conn.commit()
 
-        # Установка версии схемы для будущих миграций (DB-3)
         cursor.execute("PRAGMA user_version = 2")
 
         print("Таблицы успешно созданы")
@@ -119,9 +116,11 @@ class Database:
         cursor.execute("PRAGMA user_version")
         version = cursor.fetchone()[0]
 
-        if version < 2:
+        if version < 4:
             try:
-                cursor.execute("ALTER TABLE key_store ADD COLUMN version INTEGER DEFAULT 1")
+                cursor.execute("ALTER TABLE vault_entries ADD COLUMN encrypted_data BLOB")
+                cursor.execute("PRAGMA user_version = 4")
+                self.conn.commit()
             except:
                 pass
 

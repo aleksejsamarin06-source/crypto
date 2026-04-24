@@ -1,11 +1,11 @@
 import os
 import hashlib
 import binascii
-from src.core.crypto.placeholder import AES256Placeholder
+from src.core.vault.encryption_service import AESGCMEncryption
 
 class KeyManager:
     def __init__(self):
-        self.crypto = AES256Placeholder()
+        self.crypto = AESGCMEncryption()
         self.current_key = None
 
     def create_master_hash(self, password: str) -> str:
