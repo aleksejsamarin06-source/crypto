@@ -1,0 +1,125 @@
+
+```markdown
+# CryptoSafe Manager
+
+Менеджер паролей с шифрованием на стороне клиента (AES-256-GCM).
+
+## Возможности
+
+- 🔐 Безопасное хранение паролей (AES-256-GCM)
+- 🔑 Мастер-пароль с Argon2id + PBKDF2
+- 📁 Работа с несколькими базами данных
+- 📝 Журнал действий
+- 🔄 Смена мастер-пароля с перешифрованием
+- ⏱️ Автоблокировка при неактивности
+- 🔍 Поиск и фильтрация записей
+- 🎲 Генератор надёжных паролей
+- 🌐 Автоматическая загрузка фавиконок
+- 📋 Безопасный буфер обмена с автозачисткой
+- ⚙️ Настройка таймаута и уведомлений
+
+## Установка
+
+```bash
+# Клонирование
+git clone https://github.com/aleksejsamarin06-source/crypto.git
+cd crypto
+
+# Виртуальное окружение
+python -m venv venv
+venv\Scripts\activate  # Windows
+source venv/bin/activate  # Linux/Mac
+
+# Зависимости
+pip install -r requirements.txt
+```
+
+## Запуск
+
+```bash
+python -m src
+```
+
+## Структура проекта
+
+```
+crypto/
+├── src/
+│   ├── core/
+│   │   ├── crypto/                    # Криптографические операции
+│   │   │   ├── abstract.py            # Абстрактный класс шифрования
+│   │   │   ├── authentication.py      # Проверка пароля, вход, сессии
+│   │   │   ├── key_derivation.py      # Argon2, PBKDF2
+│   │   │   ├── key_storage.py         # Безопасное кэширование ключей
+│   │   │   └── placeholder.py         # XOR заглушка (спринт 1)
+│   │   ├── vault/                     # Операции с хранилищем
+│   │   │   ├── encryption_service.py  # AES-256-GCM шифрование
+│   │   │   ├── entry_manager.py       # CRUD операции
+│   │   │   └── password_generator.py  # Генерация паролей
+│   │   ├── clipboard/                 # Буфер обмена (спринт 4)
+│   │   │   ├── clipboard_service.py   # Управление буфером
+│   │   │   ├── clipboard_monitor.py   # Мониторинг
+│   │   │   └── platform_adapter.py    # Платформенные адаптеры
+│   │   ├── audit_manager.py           # Журнал действий
+│   │   ├── config.py                  # Настройки
+│   │   ├── events.py                  # Система событий
+│   │   ├── key_manager.py             # Управление ключами
+│   │   ├── settings_manager.py        # Настройки приложения
+│   │   └── state_manager.py           # Состояние приложения
+│   ├── database/
+│   │   ├── backup.py                  # Резервное копирование
+│   │   ├── db.py                      # Подключение к SQLite
+│   │   └── models.py                  # Модели данных
+│   └── gui/
+│       ├── widgets/
+│       │   ├── audit_log_dialog.py    # Просмотр журнала
+│       │   ├── change_password_dialog.py # Смена пароля
+│       │   ├── entry_dialog.py        # Добавление/редактирование
+│       │   ├── login_dialog.py        # Окно входа
+│       │   ├── password_entry.py      # Поле с кнопкой показать/скрыть
+│       │   └── setup_wizard.py        # Мастер первого запуска
+│       └── main_window.py             # Главное окно
+├── tests/
+│   ├── test_authentication.py
+│   ├── test_clipboard_memory.py
+│   ├── test_clipboard_integration.py
+│   ├── test_encryption_service.py
+│   ├── test_entry_manager.py
+│   ├── test_integration.py
+│   ├── test_key_derivation.py
+│   ├── test_key_storage.py
+│   ├── test_password_generator.py
+│   └── test_performance.py
+├── requirements.txt
+├── main.py
+└── README.md
+```
+
+## Тестирование
+
+```bash
+python -m unittest discover tests -v
+```
+
+## Спринты
+
+| Спринт | Описание | Статус |
+|--------|----------|--------|
+| 1 | Фундамент (архитектура, БД, GUI) | ✅ |
+| 2 | Управление ключами (Argon2, PBKDF2) | ✅ |
+| 3 | Шифрование записей (AES-256-GCM) | ✅ |
+| 4 | Буфер обмена с автозачисткой | ✅ |
+| 5 | Аудит и журналирование | ⏳ |
+| 6 | Импорт/экспорт данных | ⏳ |
+| 7 | Автоблокировка | ⏳ |
+| 8 | Упаковка и релиз | ⏳ |
+
+## Технологии
+
+- **GUI:** PySide6
+- **Шифрование:** AES-256-GCM (cryptography)
+- **Хэширование:** Argon2id (argon2-cffi)
+- **Буфер обмена:** pyperclip, win32clipboard (Windows), pyobjc (macOS)
+- **БД:** SQLite3
+- **Тесты:** unittest
+```

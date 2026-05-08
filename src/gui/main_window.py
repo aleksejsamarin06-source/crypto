@@ -11,6 +11,9 @@ from src.database.db import Database
 from src.database.backup import BackupManager
 from src.gui.widgets.setup_wizard import SetupWizard
 import os
+from PySide6.QtWidgets import QCheckBox, QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QPushButton
+from PySide6.QtWidgets import QSystemTrayIcon
+from src.core.clipboard.clipboard_service import ClipboardService
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QTableWidget, QTableWidgetItem, QStatusBar,
@@ -25,6 +28,21 @@ from src.core.vault.entry_manager import EntryManager
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(QIcon("icon.png"))  # иконка, если есть
+        self.tray_icon.show()
+
+        from src.core.clipboard.clipboard_service import ClipboardService
+
+        self.clipboard_service = ClipboardService()
+        self.notifications_enabled = True
+
+        event_system.subscribe('ClipboardCopied', self.on_clipboard_copied)
+        event_system.subscribe('ClipboardCleared', self.on_clipboard_cleared)
+        event_system.subscribe('ClipboardSuspicious', self.on_clipboard_suspicious)
+        event_system.subscribe('ClipboardWillClear', self.on_clipboard_will_clear)
+
         self.setWindowTitle("CryptoSafe Manager")
         self.resize(800, 600)
 
@@ -38,6 +56,10 @@ class MainWindow(QMainWindow):
         self.setup_menu()
         self.setup_table()
         self.setup_statusbar()
+        self.clipboard_service = ClipboardService()
+
+        event_system.subscribe('ClipboardCopied', self.on_clipboard_copied)
+        event_system.subscribe('ClipboardCleared', self.on_clipboard_cleared)
 
         self.check_first_run()
 
@@ -129,6 +151,13 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Статус: Не авторизован | Готов к работе")
+        self.status_bar.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj == self.status_bar and event.type() == QEvent.MouseButtonDblClick:
+            self.show_clipboard_preview()
+            return True
+        return super().eventFilter(obj, event)
 
     def load_placeholder_data(self):
         self.table.setRowCount(0)
@@ -195,9 +224,16 @@ class MainWindow(QMainWindow):
                 self.table.setRowHidden(row, True)
 
     def show_context_menu(self, position):
+        if not self.key_storage or self.key_storage.is_locked():
+            if self.notifications_enabled:
+                self.status_bar.showMessage("Хранилище заблокировано. Сначала разблокируйте.", 2000)
+            return
+
         menu = QMenu()
 
         copy_username = menu.addAction("Копировать имя пользователя")
+        copy_password = menu.addAction("Копировать пароль")
+        copy_all = menu.addAction("Копировать всё (логин:пароль)")
         copy_url = menu.addAction("Копировать URL")
         menu.addSeparator()
         edit_action = menu.addAction("Редактировать")
@@ -205,27 +241,70 @@ class MainWindow(QMainWindow):
 
         action = menu.exec(self.table.viewport().mapToGlobal(position))
 
-        if action == copy_username:
-            selected = self.table.selectedIndexes()
-            if selected:
-                row = selected[0].row()
-                username = self.table.item(row, 2).text()
-                QGuiApplication.clipboard().setText(username)
-                self.status_bar.showMessage(f"Скопировано: {username}", 2000)
+        selected = self.table.selectedIndexes()
+        if not selected:
+            return
 
-        elif action == copy_url:
-            selected = self.table.selectedIndexes()
-            if selected:
-                row = selected[0].row()
-                url = self.table.item(row, 3).text()
-                QGuiApplication.clipboard().setText(url)
-                self.status_bar.showMessage(f"Скопировано: {url}", 2000)
+        row = selected[0].row()
+        entry_id = int(self.table.item(row, 0).text())
+        entry = self.entries_data.get(entry_id, {})
 
-        elif action == edit_action:
-            self.edit_entry()
+        try:
+            if action == copy_username:
+                username = entry.get("username", "")
+                if username:
+                    self.clipboard_service.copy(username, "username", entry_id)
+                    if self.notifications_enabled:
+                        self.status_bar.showMessage(f"Логин скопирован: {username}", 2000)
+                elif self.notifications_enabled:
+                    self.status_bar.showMessage("Логин не задан", 2000)
 
-        elif action == delete_action:
-            self.delete_entry()
+            elif action == copy_password:
+                password = entry.get("password", "")
+                if password:
+                    self.clipboard_service.copy(password, "password", entry_id)
+                    if self.notifications_enabled:
+                        self.status_bar.showMessage(f"Пароль скопирован", 2000)
+                elif self.notifications_enabled:
+                    self.status_bar.showMessage("Пароль не задан", 2000)
+
+            elif action == copy_all:
+                username = entry.get("username", "")
+                password = entry.get("password", "")
+                if username and password:
+                    clipboard_text = f"{username}:{password}"
+                    self.clipboard_service.copy(clipboard_text, "both", entry_id)
+                    if self.notifications_enabled:
+                        self.status_bar.showMessage(f"Скопировано: {clipboard_text[:20]}...", 2000)
+                elif username:
+                    self.clipboard_service.copy(username, "username", entry_id)
+                    if self.notifications_enabled:
+                        self.status_bar.showMessage(f"Скопирован логин: {username}", 2000)
+                elif password:
+                    self.clipboard_service.copy(password, "password", entry_id)
+                    if self.notifications_enabled:
+                        self.status_bar.showMessage(f"Скопирован пароль", 2000)
+                elif self.notifications_enabled:
+                    self.status_bar.showMessage("Нет данных для копирования", 2000)
+
+            elif action == copy_url:
+                url = entry.get("url", "")
+                if url:
+                    self.clipboard_service.copy(url, "url", entry_id)
+                    if self.notifications_enabled:
+                        self.status_bar.showMessage(f"URL скопирован: {url}", 2000)
+                elif self.notifications_enabled:
+                    self.status_bar.showMessage("URL не задан", 2000)
+
+            elif action == edit_action:
+                self.edit_entry()
+
+            elif action == delete_action:
+                self.delete_entry()
+        except Exception as e:
+            print(f"Ошибка в контекстном меню: {e}")
+            if self.notifications_enabled:
+                self.status_bar.showMessage(f"Ошибка: {e}", 3000)
 
     def toggle_passwords_visibility(self, checked):
         """Глобальное переключение видимости паролей"""
@@ -267,6 +346,23 @@ class MainWindow(QMainWindow):
 
                 self.entry_manager = EntryManager(db, self.key_manager)
                 self.db = db
+
+                from src.core.clipboard.clipboard_service import ClipboardService
+                from src.core.settings_manager import SettingsManager
+
+                # Загружаем настройки
+                settings = SettingsManager(file_path)
+                saved_timeout = settings.get('clipboard_timeout', '30')
+                self.notifications_enabled = settings.get_notification_enabled()
+                settings.close()
+
+                # Создаём сервис с загруженным таймаутом
+                self.clipboard_service = ClipboardService(timeout=int(saved_timeout))
+                print(f"Уведомления включены: {self.notifications_enabled}")
+
+                from src.core.clipboard.clipboard_monitor import ClipboardMonitor
+                self.clipboard_monitor = ClipboardMonitor(self.clipboard_service)
+                self.clipboard_monitor.start_monitoring()
 
                 entries = self.entry_manager.get_all_entries()
                 self.entries_data = {entry["id"]: entry for entry in entries}
@@ -361,7 +457,58 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def show_settings(self):
-        QMessageBox.information(self, "Информация", "Настройки будут доступны в следующем спринте")
+        from src.core.settings_manager import SettingsManager
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Настройки буфера обмена")
+        dialog.resize(300, 200)
+        layout = QVBoxLayout(dialog)
+
+        info_label = QLabel(f"Текущий таймаут: {self.clipboard_service.auto_clear_timeout} сек")
+        layout.addWidget(info_label)
+
+        timeout_btn = QPushButton("Изменить таймаут")
+        timeout_btn.clicked.connect(self.change_timeout_dialog)
+        layout.addWidget(timeout_btn)
+
+        layout.addSpacing(10)
+
+        self.notifications_checkbox = QCheckBox("Показывать уведомления в статус-баре")
+        self.notifications_checkbox.setChecked(self.notifications_enabled)
+        layout.addWidget(self.notifications_checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec():
+            self.notifications_enabled = self.notifications_checkbox.isChecked()
+            # Сохраняем в БД
+            settings = SettingsManager(self.current_db_path)
+            settings.set_notification_enabled(self.notifications_enabled)
+            settings.close()
+            if self.notifications_enabled:
+                self.status_bar.showMessage("Настройки сохранены", 2000)
+
+    def change_timeout_dialog(self):
+        from PySide6.QtWidgets import QInputDialog
+        from src.core.settings_manager import SettingsManager
+
+        current = self.clipboard_service.auto_clear_timeout
+        new_timeout, ok = QInputDialog.getInt(
+            self, "Таймаут автоочистки",
+            "Введите время в секундах (5-300):\n0 = никогда",
+            current, 5, 300
+        )
+
+        if ok and new_timeout != current:
+            self.clipboard_service.set_auto_clear_timeout(new_timeout)
+            settings = SettingsManager(self.current_db_path)
+            settings.set('clipboard_timeout', str(new_timeout))
+            settings.close()
+            if self.notifications_enabled:
+                self.status_bar.showMessage(f"Таймаут изменён на {new_timeout} секунд", 2000)
 
     def about(self):
         QMessageBox.information(
@@ -438,6 +585,13 @@ class MainWindow(QMainWindow):
         if self.key_storage:
             self.key_storage.clear()
 
+        # Очистка буфера обмена при блокировке
+        if hasattr(self, 'clipboard_service'):
+            self.clipboard_service.clear()
+
+        if hasattr(self, 'clipboard_monitor'):
+            self.clipboard_monitor.stop_monitoring()
+
         self.entries_data = {}
         self.table.setRowCount(0)
         self.status_bar.showMessage("Статус: Хранилище заблокировано")
@@ -479,3 +633,96 @@ class MainWindow(QMainWindow):
                 print("key_storage не существует")
         else:
             print(f"Другое состояние: {state}")
+
+    def on_clipboard_copied(self, data):
+        if self.notifications_enabled:
+            timeout = data.get('timeout', 30)
+            self.status_bar.showMessage(f"Скопировано в буфер обмена (очистится через {timeout}с)", 3000)
+
+        # Запускаем таймер обновления статуса
+        self.status_update_timer = QTimer()
+        self.status_update_timer.timeout.connect(self.update_clipboard_status)
+        self.status_update_timer.start(1000)
+
+        if self.notifications_enabled:
+            self.tray_icon.showMessage("CryptoSafe", f"Скопирован {data.get('data_type')}", QSystemTrayIcon.Information,
+                                       2000)
+
+    def update_clipboard_status(self):
+        remaining = self.clipboard_service.get_remaining_time()
+        if remaining > 0:
+            if self.notifications_enabled:
+                self.status_bar.showMessage(f"Буфер обмена: очистится через {remaining} сек", 1000)
+        else:
+            self.status_update_timer.stop()
+
+    def on_clipboard_cleared(self, data):
+        """Срабатывает когда буфер очищен"""
+        if self.notifications_enabled:
+            self.status_bar.showMessage("Буфер обмена очищен", 2000)
+
+    def on_clipboard_will_clear(self, data):
+        if self.notifications_enabled:
+            seconds = data.get('seconds', 5)
+            self.status_bar.showMessage(f"Буфер обмена очистится через {seconds} сек", 4000)
+
+    def on_clipboard_suspicious(self, data):
+        self.status_bar.showMessage("ВНИМАНИЕ: Обнаружена подозрительная активность с буфером обмена!", 5000)
+
+    def show_clipboard_preview(self):
+        """Показ замаскированного содержимого буфера"""
+        if not hasattr(self, 'clipboard_service'):
+            self.status_bar.showMessage("Буфер обмена не инициализирован", 2000)
+            return
+
+        item = self.clipboard_service.current_item
+        if not item:
+            self.status_bar.showMessage("Буфер обмена пуст", 2000)
+            return
+
+        from PySide6.QtWidgets import QInputDialog, QMessageBox, QLineEdit
+
+        data = item.data
+        data_type = item.data_type
+
+        # Маскируем содержимое
+        if len(data) > 4:
+            masked = data[:4] + "••••" + (data[-2:] if len(data) > 6 else "")
+        else:
+            masked = "••••••••"
+
+        # Запрашиваем пароль
+        password, ok = QInputDialog.getText(
+            self, "Просмотр буфера обмена",
+            f"Тип: {data_type}\nСодержимое (маскировано): {masked}\n\nВведите мастер-пароль для полного просмотра:",
+            QLineEdit.Password
+        )
+
+        if ok and password:
+            # Проверка мастер-пароля (упрощённо - если есть key_manager и база открыта)
+            if hasattr(self, 'key_manager') and self.key_manager.current_key:
+                QMessageBox.information(self, "Полное содержимое", f"{data_type}: {data}")
+            else:
+                QMessageBox.warning(self, "Ошибка", "Неверный пароль или хранилище не открыто")
+
+        item = self.clipboard_service.current_item
+        if not item:
+            self.status_bar.showMessage("Буфер обмена пуст", 2000)
+            return
+
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+        data = item.data
+        if len(data) > 4:
+            masked = data[:4] + "••••" + data[-2:] if len(data) > 6 else data[:4] + "••••"
+        else:
+            masked = "••••••••"
+
+        password, ok = QInputDialog.getText(
+            self, "Просмотр буфера обмена",
+            f"Содержимое ({item.data_type}): {masked}\n\nВведите мастер-пароль для полного просмотра:",
+            QLineEdit.Password
+        )
+
+        if ok and password:
+            QMessageBox.information(self, "Полное содержимое", f"{item.data_type}: {data}")

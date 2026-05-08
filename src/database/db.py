@@ -53,6 +53,9 @@ class Database:
             )
         """)
 
+        cursor.execute("INSERT OR IGNORE INTO settings (setting_key, setting_value) VALUES (?, ?)",
+                       ('clipboard_timeout', '30'))
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS key_store (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
