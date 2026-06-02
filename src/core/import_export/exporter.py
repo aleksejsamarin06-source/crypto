@@ -117,3 +117,4 @@ class VaultExporter:
     def _validate_encryption_material(self, password: str = None, public_key: bytes = None):
         if not password and not public_key:
             raise ValueError("Укажите пароль экспорта или разрешите plaintext для CSV/Bitwarden")
+
