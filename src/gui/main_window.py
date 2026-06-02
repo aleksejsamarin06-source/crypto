@@ -11,7 +11,8 @@ from src.database.db import Database
 from src.database.backup import BackupManager
 from src.gui.widgets.setup_wizard import SetupWizard
 import os
-from PySide6.QtWidgets import QCheckBox, QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QPushButton
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QVBoxLayout,
+                               QDialogButtonBox, QLabel, QPushButton, QSpinBox)
 from PySide6.QtWidgets import QSystemTrayIcon
 from src.core.clipboard.clipboard_service import ClipboardService
 from PySide6.QtGui import QIcon
@@ -52,6 +53,9 @@ class MainWindow(QMainWindow):
         self.entry_manager = None
         self.key_storage = None
         self.current_db_path = None
+        self.master_password = None
+        self.minimize_lock_mode = 'delayed'
+        self.minimize_lock_delay_seconds = 300
 
         self.setup_menu()
         self.setup_table()
@@ -60,6 +64,7 @@ class MainWindow(QMainWindow):
 
         event_system.subscribe('ClipboardCopied', self.on_clipboard_copied)
         event_system.subscribe('ClipboardCleared', self.on_clipboard_cleared)
+        event_system.subscribe('log_tampering_detected', self.on_log_tampering)
 
         self.check_first_run()
 
@@ -67,6 +72,15 @@ class MainWindow(QMainWindow):
         self.inactivity_timer.setInterval(60000)  # проверка каждую минуту
         self.inactivity_timer.timeout.connect(self.check_inactivity)
         self.inactivity_timer.start()
+
+        self.integrity_timer = QTimer()
+        self.integrity_timer.setInterval(24 * 60 * 60 * 1000)  # 24 часа в миллисекундах
+        self.integrity_timer.timeout.connect(self.check_log_integrity)
+        self.integrity_timer.start()
+
+        self.minimize_lock_timer = QTimer()
+        self.minimize_lock_timer.setSingleShot(True)
+        self.minimize_lock_timer.timeout.connect(self.lock_after_minimize_timeout)
 
         app = QCoreApplication.instance()
         if app:
@@ -79,10 +93,13 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Новый", self.run_setup_wizard)
         file_menu.addAction("Открыть", self.open_file)
         file_menu.addSeparator()
+        file_menu.addAction("Импорт", self.import_vault)
+        file_menu.addAction("Экспорт", self.export_vault)
+        file_menu.addSeparator()
         file_menu.addAction("Резервная копия", self.backup)
         file_menu.addAction("Сменить пароль", self.change_password)
         file_menu.addSeparator()
-        file_menu.addAction("Заблокировать", self.lock_vault)
+        file_menu.addAction("Заблокировать", lambda: self.lock_vault())
         file_menu.addAction("Выход", self.close)
 
         edit_menu = menubar.addMenu("Правка")
@@ -158,6 +175,14 @@ class MainWindow(QMainWindow):
             self.show_clipboard_preview()
             return True
         return super().eventFilter(obj, event)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange:
+            if self.isMinimized():
+                self.handle_window_minimized()
+            else:
+                self.cancel_minimize_lock()
 
     def load_placeholder_data(self):
         self.table.setRowCount(0)
@@ -236,6 +261,7 @@ class MainWindow(QMainWindow):
         copy_all = menu.addAction("Копировать всё (логин:пароль)")
         copy_url = menu.addAction("Копировать URL")
         menu.addSeparator()
+        share_action = menu.addAction("Поделиться")
         edit_action = menu.addAction("Редактировать")
         delete_action = menu.addAction("Удалить")
 
@@ -296,6 +322,9 @@ class MainWindow(QMainWindow):
                 elif self.notifications_enabled:
                     self.status_bar.showMessage("URL не задан", 2000)
 
+            elif action == share_action:
+                self.share_entry(entry_id)
+
             elif action == edit_action:
                 self.edit_entry()
 
@@ -323,6 +352,7 @@ class MainWindow(QMainWindow):
 
             db = Database(file_path)
             db.connect()
+            db.create_tables()
 
             login_dialog = LoginDialog(self, db)
 
@@ -344,6 +374,21 @@ class MainWindow(QMainWindow):
 
                 print("Ключ шифрования установлен и сохранён в key_storage")
 
+                from src.core.audit.audit_logger import AuditLogger
+                master_password = login_dialog.master_password  # получаем пароль
+                self.master_password = master_password
+                self.audit_logger = AuditLogger(db, master_password)  # создаём логгер
+
+                from src.core.audit.log_verifier import LogVerifier
+                verifier = LogVerifier(db, master_password)
+                integrity_result = verifier.check_integrity()
+
+                if not integrity_result:
+                    QMessageBox.warning(self, "Предупреждение", "Нарушена целостность журнала аудита!")
+
+                from src.core.events import event_system
+                event_system.publish('vault_unlocked', {'user_id': 'user'})
+
                 self.entry_manager = EntryManager(db, self.key_manager)
                 self.db = db
 
@@ -354,6 +399,8 @@ class MainWindow(QMainWindow):
                 settings = SettingsManager(file_path)
                 saved_timeout = settings.get('clipboard_timeout', '30')
                 self.notifications_enabled = settings.get_notification_enabled()
+                self.minimize_lock_mode = settings.get_minimize_lock_mode()
+                self.minimize_lock_delay_seconds = settings.get_minimize_lock_delay_seconds()
                 settings.close()
 
                 # Создаём сервис с загруженным таймаутом
@@ -392,8 +439,34 @@ class MainWindow(QMainWindow):
                     self, "Резервная копия",
                     f"Создана резервная копия:\n{backup_path}"
                 )
-            else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось создать резервную копию")
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось создать резервную копию")
+
+    def export_vault(self):
+        if not self.entry_manager or not self.master_password:
+            QMessageBox.warning(self, "Ошибка", "Сначала откройте хранилище")
+            return
+        from src.gui.widgets.export_dialog import ExportDialog
+        dialog = ExportDialog(self, self.entry_manager, self.master_password)
+        dialog.exec()
+
+    def import_vault(self):
+        if not self.entry_manager:
+            QMessageBox.warning(self, "Ошибка", "Сначала откройте хранилище")
+            return
+        from src.gui.widgets.import_dialog import ImportDialog
+        dialog = ImportDialog(self, self.entry_manager)
+        if dialog.exec():
+            self.entries_data = {entry["id"]: entry for entry in self.entry_manager.get_all_entries()}
+            self.load_placeholder_data()
+
+    def share_entry(self, entry_id):
+        if not self.entry_manager:
+            QMessageBox.warning(self, "Ошибка", "Сначала откройте хранилище")
+            return
+        from src.gui.widgets.share_dialog import ShareDialog
+        dialog = ShareDialog(self, self.entry_manager, entry_id)
+        dialog.exec()
 
     def add_entry(self):
         dialog = EntryDialog(self, "Добавить запись")
@@ -453,23 +526,67 @@ class MainWindow(QMainWindow):
             self.key_storage.update_activity()
 
         logs = self.audit_manager.get_logs()
-        dialog = AuditLogDialog(self, logs)
+        dialog = AuditLogDialog(self, logs, self.current_db_path, self.master_password)
+        dialog.entry_selected.connect(self.select_entry_by_id)
         dialog.exec()
+
+    def select_entry_by_id(self, entry_id):
+        """Выбор записи в таблице по ID"""
+        for row in range(self.table.rowCount()):
+            if int(self.table.item(row, 0).text()) == entry_id:
+                self.table.selectRow(row)
+                self.table.scrollToItem(self.table.item(row, 0))
+                break
 
     def show_settings(self):
         from src.core.settings_manager import SettingsManager
 
+        if not self.current_db_path:
+            QMessageBox.warning(self, "Ошибка", "Сначала откройте базу данных")
+            return
+
         dialog = QDialog(self)
-        dialog.setWindowTitle("Настройки буфера обмена")
-        dialog.resize(300, 200)
+        dialog.setWindowTitle("Настройки")
+        dialog.resize(360, 280)
         layout = QVBoxLayout(dialog)
 
+        layout.addWidget(QLabel("Буфер обмена"))
         info_label = QLabel(f"Текущий таймаут: {self.clipboard_service.auto_clear_timeout} сек")
         layout.addWidget(info_label)
 
         timeout_btn = QPushButton("Изменить таймаут")
         timeout_btn.clicked.connect(self.change_timeout_dialog)
         layout.addWidget(timeout_btn)
+
+        layout.addSpacing(10)
+
+        layout.addWidget(QLabel("Блокировка при сворачивании"))
+        self.minimize_lock_checkbox = QCheckBox("Закрывать хранилище при сворачивании окна")
+        self.minimize_lock_checkbox.setChecked(self.minimize_lock_mode != 'disabled')
+        layout.addWidget(self.minimize_lock_checkbox)
+
+        self.minimize_lock_mode_combo = QComboBox()
+        self.minimize_lock_mode_combo.addItem("Сразу", 'immediate')
+        self.minimize_lock_mode_combo.addItem("Через заданное время", 'delayed')
+        mode_index = 0 if self.minimize_lock_mode == 'immediate' else 1
+        self.minimize_lock_mode_combo.setCurrentIndex(mode_index)
+        layout.addWidget(self.minimize_lock_mode_combo)
+
+        self.minimize_lock_delay_spin = QSpinBox()
+        self.minimize_lock_delay_spin.setRange(1, 1440)
+        self.minimize_lock_delay_spin.setSuffix(" мин")
+        self.minimize_lock_delay_spin.setValue(max(1, self.minimize_lock_delay_seconds // 60))
+        layout.addWidget(self.minimize_lock_delay_spin)
+
+        def update_minimize_controls():
+            enabled = self.minimize_lock_checkbox.isChecked()
+            delayed = self.minimize_lock_mode_combo.currentData() == 'delayed'
+            self.minimize_lock_mode_combo.setEnabled(enabled)
+            self.minimize_lock_delay_spin.setEnabled(enabled and delayed)
+
+        self.minimize_lock_checkbox.toggled.connect(update_minimize_controls)
+        self.minimize_lock_mode_combo.currentIndexChanged.connect(update_minimize_controls)
+        update_minimize_controls()
 
         layout.addSpacing(10)
 
@@ -484,9 +601,16 @@ class MainWindow(QMainWindow):
 
         if dialog.exec():
             self.notifications_enabled = self.notifications_checkbox.isChecked()
-            # Сохраняем в БД
+            if self.minimize_lock_checkbox.isChecked():
+                self.minimize_lock_mode = self.minimize_lock_mode_combo.currentData()
+            else:
+                self.minimize_lock_mode = 'disabled'
+            self.minimize_lock_delay_seconds = self.minimize_lock_delay_spin.value() * 60
+
             settings = SettingsManager(self.current_db_path)
             settings.set_notification_enabled(self.notifications_enabled)
+            settings.set_minimize_lock_mode(self.minimize_lock_mode)
+            settings.set_minimize_lock_delay_seconds(self.minimize_lock_delay_seconds)
             settings.close()
             if self.notifications_enabled:
                 self.status_bar.showMessage("Настройки сохранены", 2000)
@@ -513,7 +637,7 @@ class MainWindow(QMainWindow):
     def about(self):
         QMessageBox.information(
             self, "О программе",
-            "CryptoSafe Manager\nВерсия: 0.3.0 (Sprint 3)\n\nМенеджер паролей с открытым кодом"
+            "CryptoSafe Manager\nВерсия: 0.6.0 (Sprint 6)\n\nМенеджер паролей с открытым кодом"
         )
 
     def check_first_run(self):
@@ -581,7 +705,37 @@ class MainWindow(QMainWindow):
                 "Хранилище успешно создано"
             )
 
-    def lock_vault(self):
+    def check_log_integrity(self):
+        """Периодическая проверка целостности логов"""
+        if hasattr(self, 'db') and self.db and hasattr(self, 'audit_logger'):
+            from src.core.audit.log_verifier import LogVerifier
+            try:
+                verifier = LogVerifier(self.db, None)
+                result = verifier.verify_range(0, 1000)  # проверяем последние 1000 записей
+                if not result['is_valid']:
+                    self.status_bar.showMessage("Нарушена целостность журнала аудита!", 5000)
+            except Exception as e:
+                print(f"Ошибка проверки целостности: {e}")
+
+    def on_log_tampering(self, data):
+        """Обработка обнаружения вмешательства в лог"""
+        msg = "Обнаружено вмешательство в журнал аудита!\n\n"
+        if data.get('invalid_signatures'):
+            msg += f"Некорректные подписи в записях: {data['invalid_signatures']}\n"
+        if data.get('chain_breaks'):
+            msg += f"Разрывы хеш-цепочки: {data['chain_breaks']}\n"
+
+        result = QMessageBox.critical(
+            self,
+            "КРИТИЧЕСКАЯ ОШИБКА",
+            msg + "\n\nЗаблокировать хранилище?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if result == QMessageBox.Yes:
+            self.lock_vault()
+
+    def lock_vault(self, reopen=True):
         if self.key_storage:
             self.key_storage.clear()
 
@@ -592,11 +746,14 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'clipboard_monitor'):
             self.clipboard_monitor.stop_monitoring()
 
+        from src.core.events import event_system
+        event_system.publish('vault_locked', {})
+
         self.entries_data = {}
         self.table.setRowCount(0)
         self.status_bar.showMessage("Статус: Хранилище заблокировано")
 
-        if self.current_db_path:
+        if reopen and self.current_db_path:
             self.open_file()
 
     def check_inactivity(self):
@@ -604,6 +761,34 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'key_storage') and self.key_storage:
             if self.key_storage.is_locked():
                 self.lock_vault()
+
+    def handle_window_minimized(self):
+        if not self.current_db_path or not self.key_storage:
+            return
+
+        if self.minimize_lock_mode == 'disabled':
+            print("Блокировка при сворачивании отключена")
+            return
+
+        if self.minimize_lock_mode == 'immediate':
+            print("Окно свёрнуто - блокируем хранилище сразу")
+            self.lock_vault(reopen=False)
+            return
+
+        self.minimize_lock_timer.start(self.minimize_lock_delay_seconds * 1000)
+        print(f"Окно свёрнуто - блокировка через {self.minimize_lock_delay_seconds} сек")
+
+    def cancel_minimize_lock(self):
+        if hasattr(self, 'minimize_lock_timer') and self.minimize_lock_timer.isActive():
+            self.minimize_lock_timer.stop()
+            print("Отложенная блокировка при сворачивании отменена")
+        if hasattr(self, 'key_storage') and self.key_storage:
+            self.key_storage.update_activity()
+
+    def lock_after_minimize_timeout(self):
+        if self.isMinimized() and self.minimize_lock_mode == 'delayed':
+            print("Истёк таймаут сворачивания - блокируем хранилище")
+            self.lock_vault(reopen=False)
 
     def change_password(self):
         if not self.current_db_path:
@@ -621,16 +806,13 @@ class MainWindow(QMainWindow):
         print(f"Состояние приложения изменилось: {state}")  # отладка
 
         if state == Qt.ApplicationInactive:
-            print("Приложение стало неактивным - блокируем")
+            print("Приложение стало неактивным")
             if hasattr(self, 'key_storage') and self.key_storage:
-                print("key_storage существует, очищаем")
-                self.key_storage.clear()
-                self.key_manager.current_key = None
-                self.entries_data = {}
-                self.table.setRowCount(0)
-                self.status_bar.showMessage("Статус: Хранилище заблокировано")
+                self.key_storage.update_activity()
             else:
                 print("key_storage не существует")
+        elif state == Qt.ApplicationActive:
+            self.cancel_minimize_lock()
         else:
             print(f"Другое состояние: {state}")
 
@@ -639,7 +821,6 @@ class MainWindow(QMainWindow):
             timeout = data.get('timeout', 30)
             self.status_bar.showMessage(f"Скопировано в буфер обмена (очистится через {timeout}с)", 3000)
 
-        # Запускаем таймер обновления статуса
         self.status_update_timer = QTimer()
         self.status_update_timer.timeout.connect(self.update_clipboard_status)
         self.status_update_timer.start(1000)

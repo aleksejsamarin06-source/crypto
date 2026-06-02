@@ -1,5 +1,8 @@
-import unittest
 import os
+
+os.environ['UNITTEST_RUNNING'] = '1'
+
+import unittest
 import tempfile
 from src.core.clipboard.clipboard_service import ClipboardService
 from src.core.vault.entry_manager import EntryManager
@@ -29,7 +32,6 @@ class TestClipboardIntegration(unittest.TestCase):
         os.unlink(self.db_path)
 
     def test_copy_from_entry(self):
-        """INT-1: Интеграция с хранилищем"""
         entry_id = self.entry_manager.create_entry({
             "title": "Test",
             "username": "testuser",
@@ -45,7 +47,6 @@ class TestClipboardIntegration(unittest.TestCase):
         self.assertIsNotNone(self.clipboard_service.current_item)
 
     def test_clear_on_lock(self):
-        """SEC-3: Очистка при блокировке"""
         self.clipboard_service.copy("secret", "password", 1)
         self.assertIsNotNone(self.clipboard_service.current_item)
 

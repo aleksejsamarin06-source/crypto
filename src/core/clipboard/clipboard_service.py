@@ -8,13 +8,13 @@ import secrets
 import ctypes
 
 def secure_zero_memory(data: str):
-    """Безопасное затирание строки в памяти через ctypes"""
+    """Безопасное затирание временной копии без записи во внутренности Python str."""
     if not data:
         return
     try:
-        addr = id(data) + 32
-        size = len(data) * 2
-        ctypes.memset(addr, 0, size)
+        buffer = bytearray(data.encode('utf-8'))
+        for i in range(len(buffer)):
+            buffer[i] = 0
     except:
         pass
 

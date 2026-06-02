@@ -1,125 +1,152 @@
-
-```markdown
 # CryptoSafe Manager
 
-Менеджер паролей с шифрованием на стороне клиента (AES-256-GCM).
+CryptoSafe Manager - локальный менеджер паролей с графическим интерфейсом на PySide6. Данные хранятся в выбранном пользователем SQLite-файле и шифруются на стороне клиента.
+
+Текущая версия: **0.6.0 (Sprint 6)**.
 
 ## Возможности
 
-- 🔐 Безопасное хранение паролей (AES-256-GCM)
-- 🔑 Мастер-пароль с Argon2id + PBKDF2
-- 📁 Работа с несколькими базами данных
-- 📝 Журнал действий
-- 🔄 Смена мастер-пароля с перешифрованием
-- ⏱️ Автоблокировка при неактивности
-- 🔍 Поиск и фильтрация записей
-- 🎲 Генератор надёжных паролей
-- 🌐 Автоматическая загрузка фавиконок
-- 📋 Безопасный буфер обмена с автозачисткой
-- ⚙️ Настройка таймаута и уведомлений
+- Создание и открытие отдельных файлов хранилища `.db`.
+- Защита мастер-паролем: Argon2id используется для проверки пароля, PBKDF2-SHA256 - для получения 256-битного ключа шифрования.
+- Шифрование записей целиком через AES-256-GCM.
+- CRUD для записей: название, логин, пароль, URL, категория и заметки.
+- Поиск по записям в таблице.
+- Генерация надежных паролей и индикатор сложности.
+- Автоматическая загрузка favicon по URL с локальным кешем в `favicons/`.
+- Контекстное меню для копирования логина, пароля, URL или пары `логин:пароль`.
+- Безопасный буфер обмена с автоочисткой, настраиваемым таймаутом и уведомлениями.
+- Блокировка хранилища при неактивности приложения.
+- Смена мастер-пароля с перешифрованием записей.
+- Резервное копирование базы данных.
+- Журнал аудита с последовательными номерами, хеш-цепочкой, подписями записей, проверкой целостности и экспортом в JSON/CSV.
+- Sprint 6: защищенный импорт и экспорт хранилища, выборочная выгрузка записей, CSV/Bitwarden/LastPass-совместимые форматы, encrypted JSON, password/public-key encryption, sharing-пакеты и QR payload chunking.
+
+## Требования
+
+- Python 3.12+.
+- Windows, macOS или Linux.
+- Для Windows используется `pywin32`, для macOS - `pyobjc`.
+
+Зависимости перечислены в [src/requirements.txt](src/requirements.txt).
 
 ## Установка
 
 ```bash
-# Клонирование
 git clone https://github.com/aleksejsamarin06-source/crypto.git
 cd crypto
 
-# Виртуальное окружение
-python -m venv venv
-venv\Scripts\activate  # Windows
-source venv/bin/activate  # Linux/Mac
+python -m venv .venv
+```
 
-# Зависимости
-pip install -r requirements.txt
+Windows:
+
+```bash
+.venv\Scripts\activate
+pip install -r src/requirements.txt
+```
+
+Linux/macOS:
+
+```bash
+source .venv/bin/activate
+pip install -r src/requirements.txt
 ```
 
 ## Запуск
 
 ```bash
-python -m src
+python main.py
 ```
+
+При первом запуске приложение предложит создать новое хранилище: нужно задать мастер-пароль и путь к SQLite-файлу, по умолчанию `~/cryptosafe.db`.
+
+## Работа с приложением
+
+1. Создайте новое хранилище через мастер первого запуска или меню `Файл -> Новый`.
+2. Откройте существующее хранилище через `Файл -> Открыть`.
+3. Добавляйте, редактируйте и удаляйте записи через меню `Правка` или двойной клик по строке.
+4. Используйте контекстное меню строки для копирования логина, пароля, URL, связки `логин:пароль` или создания sharing-пакета.
+5. Настройте таймаут очистки буфера обмена и уведомления через `Вид -> Настройки`.
+6. Просматривайте аудит через `Вид -> Журнал`; там доступны фильтры, проверка целостности и экспорт.
+7. Используйте `Файл -> Экспорт` для encrypted JSON, CSV или Bitwarden JSON.
+8. Используйте `Файл -> Импорт` для encrypted JSON, CSV, Bitwarden JSON и LastPass CSV; доступен dry-run preview.
+
+## Sprint 6
+
+### Импорт и экспорт
+
+- `encrypted_json` шифруется отдельным экспортным ключом, который не совпадает с мастер-ключом хранилища.
+- Password-based export использует PBKDF2-HMAC-SHA256, 100000 итераций и AES-GCM.
+- Public-key export использует hybrid encryption: RSA-OAEP для ключа и AES-GCM для данных.
+- Для encrypted package сохраняются metadata, ciphertext hash, payload hash и HMAC/signature-проверка.
+- CSV plaintext разрешается только явно, как режим миграции.
+- Import поддерживает `dry-run`, `merge`, `replace`, duplicate handling `skip/update/create`, лимит размера файла 10 MB и timeout 30 секунд.
+- Импортируемые поля валидируются и очищаются от script/javascript/control content.
+
+### Sharing и QR
+
+- Можно создать encrypted sharing package для отдельной записи через пароль или публичный ключ.
+- Sharing package содержит только выбранную запись, permissions, recipient, expiration от 1 до 30 дней и отдельное шифрование.
+- QR-сервис формирует payload для public keys, encrypted entries и share payloads, добавляет checksum, nonce, expiration и разбивает большие данные на chunks.
+- QR codes не содержат plaintext-пароли; в QR payload передаются только зашифрованные packages или публичные данные.
 
 ## Структура проекта
 
-```
+```text
 crypto/
-├── src/
-│   ├── core/
-│   │   ├── crypto/                    # Криптографические операции
-│   │   │   ├── abstract.py            # Абстрактный класс шифрования
-│   │   │   ├── authentication.py      # Проверка пароля, вход, сессии
-│   │   │   ├── key_derivation.py      # Argon2, PBKDF2
-│   │   │   ├── key_storage.py         # Безопасное кэширование ключей
-│   │   │   └── placeholder.py         # XOR заглушка (спринт 1)
-│   │   ├── vault/                     # Операции с хранилищем
-│   │   │   ├── encryption_service.py  # AES-256-GCM шифрование
-│   │   │   ├── entry_manager.py       # CRUD операции
-│   │   │   └── password_generator.py  # Генерация паролей
-│   │   ├── clipboard/                 # Буфер обмена (спринт 4)
-│   │   │   ├── clipboard_service.py   # Управление буфером
-│   │   │   ├── clipboard_monitor.py   # Мониторинг
-│   │   │   └── platform_adapter.py    # Платформенные адаптеры
-│   │   ├── audit_manager.py           # Журнал действий
-│   │   ├── config.py                  # Настройки
-│   │   ├── events.py                  # Система событий
-│   │   ├── key_manager.py             # Управление ключами
-│   │   ├── settings_manager.py        # Настройки приложения
-│   │   └── state_manager.py           # Состояние приложения
-│   ├── database/
-│   │   ├── backup.py                  # Резервное копирование
-│   │   ├── db.py                      # Подключение к SQLite
-│   │   └── models.py                  # Модели данных
-│   └── gui/
-│       ├── widgets/
-│       │   ├── audit_log_dialog.py    # Просмотр журнала
-│       │   ├── change_password_dialog.py # Смена пароля
-│       │   ├── entry_dialog.py        # Добавление/редактирование
-│       │   ├── login_dialog.py        # Окно входа
-│       │   ├── password_entry.py      # Поле с кнопкой показать/скрыть
-│       │   └── setup_wizard.py        # Мастер первого запуска
-│       └── main_window.py             # Главное окно
-├── tests/
-│   ├── test_authentication.py
-│   ├── test_clipboard_memory.py
-│   ├── test_clipboard_integration.py
-│   ├── test_encryption_service.py
-│   ├── test_entry_manager.py
-│   ├── test_integration.py
-│   ├── test_key_derivation.py
-│   ├── test_key_storage.py
-│   ├── test_password_generator.py
-│   └── test_performance.py
-├── requirements.txt
-├── main.py
-└── README.md
+|-- main.py
+|-- README.md
+|-- favicons/
+|-- src/
+|   |-- check_log.py
+|   |-- requirements.txt
+|   |-- core/
+|   |   |-- audit/
+|   |   |-- clipboard/
+|   |   |-- crypto/
+|   |   |-- import_export/
+|   |   |   |-- exporter.py
+|   |   |   |-- importer.py
+|   |   |   |-- sharing_service.py
+|   |   |   |-- key_exchange.py
+|   |   |   |-- crypto_utils.py
+|   |   |   `-- formats/
+|   |   |       |-- csv_format.py
+|   |   |       `-- password_manager.py
+|   |   `-- vault/
+|   |-- database/
+|   |   |-- backup.py
+|   |   |-- db.py
+|   |   `-- models.py
+|   `-- gui/
+|       |-- main_window.py
+|       `-- widgets/
+|           |-- export_dialog.py
+|           |-- import_dialog.py
+|           |-- share_dialog.py
+|           `-- ...
+`-- tests/
+    |-- test_import_export_sprint6.py
+    `-- ...
 ```
 
 ## Тестирование
 
 ```bash
-python -m unittest discover tests -v
+.venv\Scripts\python.exe -m unittest discover tests -v
 ```
-
-## Спринты
-
-| Спринт | Описание | Статус |
-|--------|----------|--------|
-| 1 | Фундамент (архитектура, БД, GUI) | ✅ |
-| 2 | Управление ключами (Argon2, PBKDF2) | ✅ |
-| 3 | Шифрование записей (AES-256-GCM) | ✅ |
-| 4 | Буфер обмена с автозачисткой | ✅ |
-| 5 | Аудит и журналирование | ⏳ |
-| 6 | Импорт/экспорт данных | ⏳ |
-| 7 | Автоблокировка | ⏳ |
-| 8 | Упаковка и релиз | ⏳ |
 
 ## Технологии
 
-- **GUI:** PySide6
-- **Шифрование:** AES-256-GCM (cryptography)
-- **Хэширование:** Argon2id (argon2-cffi)
-- **Буфер обмена:** pyperclip, win32clipboard (Windows), pyobjc (macOS)
-- **БД:** SQLite3
-- **Тесты:** unittest
-```
+- GUI: PySide6.
+- База данных: SQLite.
+- Шифрование записей: AES-256-GCM из `cryptography`.
+- Хеширование мастер-пароля: Argon2id из `argon2-cffi`.
+- Получение ключа шифрования: PBKDF2-HMAC-SHA256.
+- Export/sharing encryption: AES-GCM, PBKDF2-HMAC-SHA256, RSA-OAEP.
+- Буфер обмена: `pyperclip`, `pywin32` для Windows, `pyobjc` для macOS.
+- Тесты: `unittest`.
+
+## Статус реализации
+
+Версия `0.6.0` включает базовое GUI-хранилище, криптографию, безопасный буфер обмена, смену мастер-пароля, резервное копирование, аудит, защищенный импорт/экспорт, sharing-пакеты, публичные ключи и QR payload chunking. Сетевые time-limited links и camera scanning не добавлены как отдельный сетевой/камерный слой; текущая реализация Sprint 6 работает в офлайн-модели через файлы и QR payload data.

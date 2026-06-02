@@ -153,6 +153,9 @@ class ChangePasswordDialog(QDialog):
             db.conn.commit()
             db.close()
 
+            from src.core.events import event_system
+            event_system.publish('password_changed', {'user_id': 'user'})
+
             QMessageBox.information(self, "Готово", "Пароль успешно изменён")
             self.accept()
 

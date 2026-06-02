@@ -6,7 +6,7 @@ import urllib.request
 import os
 from PySide6.QtWidgets import QLabel
 from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer
 from src.gui.widgets.password_entry import PasswordEntry
 from src.core.vault.password_generator import PasswordGenerator
 
@@ -21,6 +21,10 @@ class EntryDialog(QDialog):
         self.result_data = None
         self.entry_data = entry_data or {}
         self.password_gen = PasswordGenerator()
+
+        self.favicon_timer = QTimer()
+        self.favicon_timer.setSingleShot(True)
+        self.favicon_timer.timeout.connect(self.load_favicon)
 
         self.setup_ui()
         self.load_data()
@@ -49,7 +53,7 @@ class EntryDialog(QDialog):
         self.strength_bar.setFixedHeight(5)
 
         self.url_edit = QLineEdit()
-        self.url_edit.textChanged.connect(self.auto_load_favicon)
+        self.url_edit.textChanged.connect(self.on_url_changed)
 
         self.favicon_label = QLabel()
         self.favicon_label.setFixedSize(16, 16)
@@ -111,7 +115,12 @@ class EntryDialog(QDialog):
         strength = self.calculate_strength(password)
         self.strength_bar.setValue(strength)
 
-    def auto_load_favicon(self):
+    def on_url_changed(self):
+        """Задержка перед загрузкой фавиконки"""
+        self.favicon_timer.stop()
+        self.favicon_timer.start(500)  # ждём 500 мс после последнего ввода
+
+    def load_favicon(self):
         """Автоматическая загрузка фавиконки при вводе URL"""
         url = self.url_edit.text().strip()
         if not url:

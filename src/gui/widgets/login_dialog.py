@@ -57,6 +57,7 @@ class LoginDialog(QDialog):
 
         if self.auth.login(password):
             self.password = password
+            self.master_password = password
             self.encryption_key = self.auth.get_encryption_key()
             self.accept()
         else:

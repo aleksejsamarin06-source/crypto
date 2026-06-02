@@ -1,6 +1,9 @@
+import os
+
+os.environ['UNITTEST_RUNNING'] = '1'
+
 import unittest
 import time
-import os
 import tempfile
 from src.core.vault.entry_manager import EntryManager
 from src.core.vault.password_generator import PasswordGenerator
@@ -30,8 +33,6 @@ class TestPerformance(unittest.TestCase):
         os.unlink(self.db_path)
 
     def test_load_1000_entries_performance(self):
-        """PERF-1: Загрузка 1000 записей < 2 секунд"""
-        # Создаём 1000 записей
         for i in range(1000):
             self.entry_manager.create_entry({
                 "title": f"Test {i}",
@@ -41,18 +42,15 @@ class TestPerformance(unittest.TestCase):
                 "category": "test"
             })
 
-        # Замеряем загрузку
         start = time.time()
         entries = self.entry_manager.get_all_entries()
         elapsed = time.time() - start
 
         print(f"\nЗагрузка 1000 записей: {elapsed:.3f} секунд")
         self.assertEqual(len(entries), 1000)
-        self.assertLess(elapsed, 2.0, f"Загрузка заняла {elapsed:.3f}с, должно быть < 2с")
+        self.assertLess(elapsed, 2.0)
 
     def test_search_performance(self):
-        """PERF-2: Поиск среди 1000 записей < 200 мс"""
-        # Создаём 1000 записей
         for i in range(1000):
             self.entry_manager.create_entry({
                 "title": f"SearchTest {i}",
@@ -63,10 +61,8 @@ class TestPerformance(unittest.TestCase):
                 "category": "test"
             })
 
-        # Загружаем в память (как в main_window)
         entries = self.entry_manager.get_all_entries()
 
-        # Замеряем поиск
         search_text = "SearchTest 500"
         start = time.time()
 
@@ -82,22 +78,18 @@ class TestPerformance(unittest.TestCase):
 
         print(f"\nПоиск среди 1000 записей: {elapsed_ms:.2f} мс")
         self.assertGreater(len(results), 0)
-        self.assertLess(elapsed_ms, 200, f"Поиск занял {elapsed_ms:.2f}мс, должно быть < 200мс")
+        self.assertLess(elapsed_ms, 200)
 
     def test_memory_usage(self):
-        """PERF-3: Использование памяти < 50 МБ для 1000 записей"""
         import psutil
-        import os
-
         process = psutil.Process(os.getpid())
-        memory_before = process.memory_info().rss / 1024 / 1024  # MB
+        memory_before = process.memory_info().rss / 1024 / 1024
 
-        # Создаём 1000 записей
         entries_data = {}
         for i in range(1000):
             data = {
                 "title": f"Test {i}",
-                "username": f"user{i}@test.com" * 5,  # увеличиваем размер
+                "username": f"user{i}@test.com" * 5,
                 "password": self.gen.generate(),
                 "url": f"https://test{i}.com",
                 "notes": f"Note {i}" * 10,
@@ -109,4 +101,4 @@ class TestPerformance(unittest.TestCase):
         memory_used = memory_after - memory_before
 
         print(f"\nИспользование памяти для 1000 записей: {memory_used:.2f} МБ")
-        self.assertLess(memory_used, 50, f"Памяти использовано {memory_used:.2f}МБ, должно быть < 50МБ")
+        self.assertLess(memory_used, 50)

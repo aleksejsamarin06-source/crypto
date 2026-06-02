@@ -20,3 +20,10 @@ class TestClipboardTiming(unittest.TestCase):
 
     def tearDown(self):
         event_system.subscribers = {}
+
+    def test_timeout_configuration_bounds(self):
+        self.clipboard_service.set_auto_clear_timeout(10)
+        self.assertEqual(self.clipboard_service.auto_clear_timeout, 10)
+
+        self.clipboard_service.set_auto_clear_timeout(301)
+        self.assertEqual(self.clipboard_service.auto_clear_timeout, 10)

@@ -1,11 +1,12 @@
-import unittest
 import os
+os.environ['UNITTEST_RUNNING'] = '1'
+
+import unittest
 import tempfile
 import json
 from src.core.crypto.authentication import Authentication
 from src.core.crypto.key_derivation import KeyDerivation
 from src.database.db import Database
-
 
 class TestAuthentication(unittest.TestCase):
     def setUp(self):
@@ -50,24 +51,20 @@ class TestAuthentication(unittest.TestCase):
         os.unlink(self.db_path)
 
     def test_successful_login(self):
-        """Тест успешного входа"""
         result = self.auth.login(self.test_password)
         self.assertTrue(result)
         self.assertIsNotNone(self.auth.key_storage.get_key())
 
     def test_failed_login(self):
-        """Тест неудачного входа"""
         result = self.auth.login("WrongPassword")
         self.assertFalse(result)
         self.assertEqual(self.auth.failed_attempts, 1)
 
     @unittest.skip("Временно пропущен")
     def test_attempts_delay(self):
-        """TEST-3: Тест задержки при неудачных попытках"""
         pass
 
     def test_logout(self):
-        """Тест выхода"""
         self.auth.login(self.test_password)
         self.auth.logout()
         self.assertIsNone(self.auth.key_storage.get_key())

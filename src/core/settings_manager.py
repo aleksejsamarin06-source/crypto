@@ -2,9 +2,12 @@ from src.database.db import Database
 
 
 class SettingsManager:
+    MINIMIZE_LOCK_MODES = ('disabled', 'immediate', 'delayed')
+
     def __init__(self, db_path: str):
         self.db = Database(db_path)
         self.db.connect()
+        self.db.create_tables()
 
     def get(self, key: str, default=None):
         cursor = self.db.conn.cursor()
@@ -27,6 +30,28 @@ class SettingsManager:
 
     def set_notification_enabled(self, enabled: bool):
         self.set('notifications_enabled', str(enabled).lower())
+
+    def get_minimize_lock_mode(self) -> str:
+        mode = self.get('minimize_lock_mode', 'delayed')
+        if mode not in self.MINIMIZE_LOCK_MODES:
+            return 'delayed'
+        return mode
+
+    def set_minimize_lock_mode(self, mode: str):
+        if mode not in self.MINIMIZE_LOCK_MODES:
+            mode = 'delayed'
+        self.set('minimize_lock_mode', mode)
+
+    def get_minimize_lock_delay_seconds(self) -> int:
+        try:
+            delay = int(self.get('minimize_lock_delay_seconds', '300'))
+        except (TypeError, ValueError):
+            delay = 300
+        return min(max(delay, 60), 86400)
+
+    def set_minimize_lock_delay_seconds(self, delay_seconds: int):
+        delay_seconds = min(max(int(delay_seconds), 60), 86400)
+        self.set('minimize_lock_delay_seconds', str(delay_seconds))
 
     def close(self):
         self.db.close()

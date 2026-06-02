@@ -9,7 +9,13 @@ class EventSystem:
 
     def publish(self, event, data=None):
         if event in self.subscribers:
-            for callback in self.subscribers[event]:
-                callback(data)
+            for callback in list(self.subscribers[event]):
+                try:
+                    callback(data)
+                except Exception as e:
+                    print(f"Ошибка обработчика события {event}: {e}")
+
+    def clear(self):
+        self.subscribers = {}
 
 event_system = EventSystem()

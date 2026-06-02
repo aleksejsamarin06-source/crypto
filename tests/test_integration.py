@@ -1,17 +1,21 @@
-import unittest
 import os
+
+os.environ['UNITTEST_RUNNING'] = '1'
+
+import unittest
 import tempfile
 import json
 from src.core.crypto.key_derivation import KeyDerivation
 from src.core.crypto.authentication import Authentication
 from src.database.db import Database
 
+
 class TestIntegration(unittest.TestCase):
     def test_full_flow(self):
-        """TEST-5: Полный цикл: создание, вход, смена пароля"""
         with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
             db_path = f.name
 
+        db = None
         try:
             db = Database(db_path)
             db.connect()
@@ -45,12 +49,17 @@ class TestIntegration(unittest.TestCase):
 
             db = Database(db_path)
             db.connect()
+
             auth = Authentication(db)
             login_result = auth.login(password)
             self.assertTrue(login_result)
             self.assertIsNotNone(auth.key_storage.get_key())
+
             db.close()
 
         finally:
             if os.path.exists(db_path):
-                os.unlink(db_path)
+                try:
+                    os.unlink(db_path)
+                except PermissionError:
+                    pass
