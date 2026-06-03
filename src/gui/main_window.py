@@ -2,7 +2,9 @@ from src.core.crypto.key_derivation import KeyDerivation
 from src.core.crypto.key_storage import KeyStorage
 from src.core.key_manager import KeyManager
 from src.core.events import event_system
-from PySide6.QtGui import QAction
+from src.core.security.activity_monitor import ActivityMonitor
+from src.core.security.panic_mode import PanicMode
+from PySide6.QtGui import QAction, QKeySequence, QColor, QPainter, QPen
 from src.core.audit_manager import AuditManager
 from src.gui.widgets.audit_log_dialog import AuditLogDialog
 from src.gui.widgets.login_dialog import LoginDialog
@@ -15,7 +17,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QVBoxLayout,
                                QDialogButtonBox, QLabel, QPushButton, QSpinBox)
 from PySide6.QtWidgets import QSystemTrayIcon
 from src.core.clipboard.clipboard_service import ClipboardService
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPixmap, QShortcut
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QTableWidget, QTableWidgetItem, QStatusBar,
                                QMenuBar, QMenu, QMessageBox, QHeaderView, QLabel)
@@ -31,7 +33,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(QIcon("icon.png"))  # иконка, если есть
+        self.tray_icon.setIcon(self.build_tray_icon("locked"))
         self.tray_icon.show()
 
         from src.core.clipboard.clipboard_service import ClipboardService
@@ -56,8 +58,23 @@ class MainWindow(QMainWindow):
         self.master_password = None
         self.minimize_lock_mode = 'delayed'
         self.minimize_lock_delay_seconds = 300
+        self.security_profile = 'standard'
+        self.auto_lock_timeout_seconds = 300
+        self.activity_sensitivity = 'medium'
+        self.minimize_to_tray = True
+        self.start_minimized_to_tray = False
+        self.panic_close_app = False
+        self.panic_stealth_mode = False
+        self.pending_auto_lock = False
+        self.unlock_on_restore_pending = False
+        self.unlock_dialog_open = False
+        self.panic_mode = PanicMode()
+        self.panic_mode.register_handler(self.handle_panic_response)
+        self.activity_monitor = ActivityMonitor(self.request_auto_lock, self.security_config())
 
         self.setup_menu()
+        self.setup_security_shortcuts()
+        self.setup_tray_menu()
         self.setup_table()
         self.setup_statusbar()
         self.clipboard_service = ClipboardService()
@@ -69,9 +86,10 @@ class MainWindow(QMainWindow):
         self.check_first_run()
 
         self.inactivity_timer = QTimer()
-        self.inactivity_timer.setInterval(60000)  # проверка каждую минуту
+        self.inactivity_timer.setInterval(5000)
         self.inactivity_timer.timeout.connect(self.check_inactivity)
         self.inactivity_timer.start()
+        self.activity_monitor.start_monitoring()
 
         self.integrity_timer = QTimer()
         self.integrity_timer.setInterval(24 * 60 * 60 * 1000)  # 24 часа в миллисекундах
@@ -84,6 +102,7 @@ class MainWindow(QMainWindow):
 
         app = QCoreApplication.instance()
         if app:
+            app.installEventFilter(self)
             app.applicationStateChanged.connect(self.on_application_state_changed)
 
     def setup_menu(self):
@@ -91,7 +110,7 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("Файл")
         file_menu.addAction("Новый", self.run_setup_wizard)
-        file_menu.addAction("Открыть", self.open_file)
+        file_menu.addAction("Открыть", lambda: self.open_file())
         file_menu.addSeparator()
         file_menu.addAction("Импорт", self.import_vault)
         file_menu.addAction("Экспорт", self.export_vault)
@@ -121,13 +140,139 @@ class MainWindow(QMainWindow):
         help_menu = menubar.addMenu("Справка")
         help_menu.addAction("О программе", self.about)
 
+    def setup_security_shortcuts(self):
+        self.panic_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Q"), self)
+        self.panic_shortcut.activated.connect(lambda: self.activate_panic_mode("hotkey"))
+
+    def setup_tray_menu(self):
+        tray_menu = QMenu(self)
+        self.tray_status_action = tray_menu.addAction("Статус: заблокировано")
+        self.tray_status_action.setEnabled(False)
+        tray_menu.addSeparator()
+        tray_menu.addAction("Показать окно", self.restore_from_tray)
+        tray_menu.addAction("Заблокировать", lambda: self.lock_vault(reopen=False))
+        tray_menu.addAction("Открыть/разблокировать", lambda: self.open_file())
+        tray_menu.addAction("Быстрый поиск", self.quick_search)
+        tray_menu.addAction("Очистить буфер обмена", self.clear_clipboard_from_tray)
+        tray_menu.addSeparator()
+        tray_menu.addAction("Panic mode", lambda: self.activate_panic_mode("tray"))
+        tray_menu.addAction("Настройки", self.show_settings)
+        tray_menu.addAction("Выход", self.close)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.update_tray_state(False)
+
+    def security_config(self):
+        return {
+            "auto_lock_enabled": True,
+            "auto_lock_timeout_seconds": self.auto_lock_timeout_seconds,
+            "activity_sensitivity": self.activity_sensitivity,
+        }
+
+    def apply_security_settings(self):
+        self.activity_monitor.update_config(self.security_config())
+        if self.key_storage:
+            self.key_storage.timeout = self.auto_lock_timeout_seconds
+
+    def build_tray_icon(self, state: str) -> QIcon:
+        colors = {
+            "locked": QColor("#d18b00"),
+            "unlocked": QColor("#22a447"),
+            "panic": QColor("#c62828"),
+        }
+        color = colors.get(state, colors["locked"])
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(color)
+        painter.setPen(QPen(QColor("#1f1f1f"), 3))
+        painter.drawEllipse(8, 8, 48, 48)
+
+        painter.setPen(QPen(QColor("white"), 5))
+        painter.drawLine(23, 32, 30, 39)
+        painter.drawLine(30, 39, 43, 25)
+        painter.end()
+
+        return QIcon(pixmap)
+
+    def update_tray_state(self, unlocked: bool):
+        self.tray_icon.setIcon(self.build_tray_icon("unlocked" if unlocked else "locked"))
+        if hasattr(self, 'tray_status_action'):
+            self.tray_status_action.setText("Статус: разблокировано" if unlocked else "Статус: заблокировано")
+        tooltip = "CryptoSafe Manager - разблокировано" if unlocked else "CryptoSafe Manager - заблокировано"
+        self.tray_icon.setToolTip(tooltip)
+
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.restore_from_tray()
+
+    def restore_from_tray(self):
+        self.show()
+        self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+        self.raise_()
+        self.activateWindow()
+        self.record_user_activity()
+        QTimer.singleShot(0, self.unlock_after_restore_if_needed)
+
+    def quick_search(self):
+        if not self.entries_data:
+            QMessageBox.information(self, "Поиск", "Сначала откройте хранилище")
+            return
+        query, ok = QInputDialog.getText(self, "Быстрый поиск", "Введите название, логин, URL или категорию:")
+        if not ok:
+            return
+        self.restore_from_tray()
+        self.search_input.setText(query)
+
+    def clear_clipboard_from_tray(self):
+        if hasattr(self, 'clipboard_service'):
+            self.clipboard_service.clear()
+        self.status_bar.showMessage("Буфер обмена очищен", 2000)
+
+    def request_auto_lock(self):
+        self.pending_auto_lock = True
+
+    def activate_panic_mode(self, method="manual"):
+        self.panic_mode.activate(method)
+
+    def handle_panic_response(self, method):
+        self.tray_icon.setIcon(self.build_tray_icon("panic"))
+        self.tray_icon.setToolTip("CryptoSafe Manager - PANIC MODE")
+        if hasattr(self, 'tray_status_action'):
+            self.tray_status_action.setText("Статус: PANIC MODE")
+        if hasattr(self, 'clipboard_service'):
+            self.clipboard_service.clear()
+        if self.key_storage:
+            self.key_storage.clear()
+        if self.key_manager:
+            self.key_manager.current_key = None
+        self.entries_data = {}
+        self.table.setRowCount(0)
+        event_system.publish('vault_locked', {'reason': 'panic', 'method': method})
+        if hasattr(self, 'audit_logger'):
+            try:
+                self.audit_logger.log_event("PANIC_MODE_ACTIVATED", "CRITICAL", "panic_mode", {"method": method})
+            except Exception as exc:
+                print(f"Не удалось записать panic event: {exc}")
+        if self.panic_stealth_mode:
+            QMessageBox.critical(self, "Application Error", "Приложение столкнулось с ошибкой и будет скрыто.")
+        self.hide()
+        self.status_bar.showMessage("Panic mode: хранилище заблокировано")
+        if self.panic_close_app:
+            QCoreApplication.quit()
+
     def setup_table(self):
         central_widget = QWidget()
+        central_widget.setMouseTracking(True)
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
         layout.setContentsMargins(10, 10, 10, 10)
 
         self.table = QTableWidget()
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
 
         self.table.horizontalHeader().setSectionsMovable(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
@@ -153,6 +298,7 @@ class MainWindow(QMainWindow):
         search_layout = QHBoxLayout()
         search_label = QLabel("Поиск:")
         self.search_input = QLineEdit()
+        self.search_input.setMouseTracking(True)
         self.search_input.setPlaceholderText("Введите текст для поиска...")
         self.search_input.textChanged.connect(self.filter_table)
         search_layout.addWidget(search_label)
@@ -166,23 +312,43 @@ class MainWindow(QMainWindow):
 
     def setup_statusbar(self):
         self.status_bar = QStatusBar()
+        self.status_bar.setMouseTracking(True)
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Статус: Не авторизован | Готов к работе")
         self.status_bar.installEventFilter(self)
 
     def eventFilter(self, obj, event):
+        if event.type() in (
+                QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                QEvent.MouseMove, QEvent.KeyPress, QEvent.FocusIn):
+            self.record_user_activity()
         if obj == self.status_bar and event.type() == QEvent.MouseButtonDblClick:
             self.show_clipboard_preview()
             return True
         return super().eventFilter(obj, event)
+
+    def record_user_activity(self):
+        if hasattr(self, 'activity_monitor') and self.activity_monitor:
+            self.activity_monitor.record_activity()
+        if hasattr(self, 'key_storage') and self.key_storage:
+            self.key_storage.update_activity()
 
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QEvent.WindowStateChange:
             if self.isMinimized():
                 self.handle_window_minimized()
+                if self.minimize_to_tray:
+                    QTimer.singleShot(0, self.hide)
             else:
                 self.cancel_minimize_lock()
+                if self.isVisible():
+                    QTimer.singleShot(0, self.unlock_after_restore_if_needed)
+
+    def closeEvent(self, event):
+        if hasattr(self, 'activity_monitor') and self.activity_monitor:
+            self.activity_monitor.stop_monitoring()
+        super().closeEvent(event)
 
     def load_placeholder_data(self):
         self.table.setRowCount(0)
@@ -340,12 +506,13 @@ class MainWindow(QMainWindow):
         self.load_placeholder_data()
         self.status_bar.showMessage("Пароли " + ("показаны" if checked else "скрыты"), 2000)
 
-    def open_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Открыть базу данных",
-            os.path.expanduser("~"),
-            "Database files (*.db)"
-        )
+    def open_file(self, file_path=None):
+        if file_path is None:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Открыть базу данных",
+                os.path.expanduser("~"),
+                "Database files (*.db)"
+            )
 
         if file_path:
             print(f"Открываем файл: {file_path}")
@@ -401,7 +568,15 @@ class MainWindow(QMainWindow):
                 self.notifications_enabled = settings.get_notification_enabled()
                 self.minimize_lock_mode = settings.get_minimize_lock_mode()
                 self.minimize_lock_delay_seconds = settings.get_minimize_lock_delay_seconds()
+                self.security_profile = settings.get_security_profile()
+                self.auto_lock_timeout_seconds = settings.get_auto_lock_timeout_seconds()
+                self.activity_sensitivity = settings.get_activity_sensitivity()
+                self.minimize_to_tray = settings.get_bool('minimize_to_tray', True)
+                self.start_minimized_to_tray = settings.get_bool('start_minimized_to_tray', False)
+                self.panic_close_app = settings.get_bool('panic_close_app', False)
+                self.panic_stealth_mode = settings.get_bool('panic_stealth_mode', False)
                 settings.close()
+                self.apply_security_settings()
 
                 # Создаём сервис с загруженным таймаутом
                 self.clipboard_service = ClipboardService(timeout=int(saved_timeout))
@@ -421,9 +596,16 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(
                     f"Статус: Открыта база {os.path.basename(file_path)} | Загружено {len(self.entries_data)} записей"
                 )
+                self.panic_mode.reset()
+                self.update_tray_state(True)
+                if self.start_minimized_to_tray:
+                    self.hide()
+                return True
             else:
                 print("Вход отменён")
                 db.close()
+                return False
+        return False
 
     def backup(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -547,7 +729,7 @@ class MainWindow(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Настройки")
-        dialog.resize(360, 280)
+        dialog.resize(460, 620)
         layout = QVBoxLayout(dialog)
 
         layout.addWidget(QLabel("Буфер обмена"))
@@ -590,6 +772,68 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(10)
 
+        layout.addWidget(QLabel("Профиль безопасности"))
+        self.security_profile_combo = QComboBox()
+        self.security_profile_combo.addItem("Standard - баланс безопасности и удобства", 'standard')
+        self.security_profile_combo.addItem("Enhanced - усиленная защита", 'enhanced')
+        self.security_profile_combo.addItem("Paranoid - максимальная защита", 'paranoid')
+        profile_index = {'standard': 0, 'enhanced': 1, 'paranoid': 2}.get(self.security_profile, 0)
+        self.security_profile_combo.setCurrentIndex(profile_index)
+        layout.addWidget(self.security_profile_combo)
+        self.security_profile_hint = QLabel("")
+        layout.addWidget(self.security_profile_hint)
+
+        self.auto_lock_spin = QSpinBox()
+        self.auto_lock_spin.setRange(1, 8 * 60)
+        self.auto_lock_spin.setSuffix(" мин")
+        self.auto_lock_spin.setValue(max(1, self.auto_lock_timeout_seconds // 60))
+        layout.addWidget(QLabel("Автоблокировка при неактивности"))
+        layout.addWidget(self.auto_lock_spin)
+
+        self.activity_sensitivity_combo = QComboBox()
+        self.activity_sensitivity_combo.addItem("Низкая", 'low')
+        self.activity_sensitivity_combo.addItem("Средняя", 'medium')
+        self.activity_sensitivity_combo.addItem("Высокая", 'high')
+        sensitivity_index = {'low': 0, 'medium': 1, 'high': 2}.get(self.activity_sensitivity, 1)
+        self.activity_sensitivity_combo.setCurrentIndex(sensitivity_index)
+        layout.addWidget(QLabel("Чувствительность активности"))
+        layout.addWidget(self.activity_sensitivity_combo)
+
+        def update_profile_hint(apply_defaults=True):
+            profile = self.security_profile_combo.currentData()
+            descriptions = {
+                'standard': ("Standard: таймаут 5 минут, средняя чувствительность.", 5, 'medium'),
+                'enhanced': ("Enhanced: таймаут 3 минуты, высокая чувствительность.", 3, 'high'),
+                'paranoid': ("Paranoid: таймаут 1 минута, высокая чувствительность, panic close по умолчанию.", 1, 'high'),
+            }
+            text, minutes, sensitivity = descriptions.get(profile, descriptions['standard'])
+            self.security_profile_hint.setText(text)
+            if apply_defaults:
+                self.auto_lock_spin.setValue(minutes)
+                self.activity_sensitivity_combo.setCurrentIndex({'low': 0, 'medium': 1, 'high': 2}[sensitivity])
+                self.panic_close_checkbox.setChecked(profile == 'paranoid')
+
+        self.security_profile_combo.currentIndexChanged.connect(lambda: update_profile_hint(True))
+        update_profile_hint(False)
+
+        self.minimize_to_tray_checkbox = QCheckBox("Сворачивать в системный трей")
+        self.minimize_to_tray_checkbox.setChecked(self.minimize_to_tray)
+        layout.addWidget(self.minimize_to_tray_checkbox)
+
+        self.start_minimized_checkbox = QCheckBox("После открытия хранилища скрывать окно в трей")
+        self.start_minimized_checkbox.setChecked(self.start_minimized_to_tray)
+        layout.addWidget(self.start_minimized_checkbox)
+
+        self.panic_close_checkbox = QCheckBox("Panic mode закрывает приложение полностью")
+        self.panic_close_checkbox.setChecked(self.panic_close_app)
+        layout.addWidget(self.panic_close_checkbox)
+
+        self.panic_stealth_checkbox = QCheckBox("Panic mode показывает системную ошибку")
+        self.panic_stealth_checkbox.setChecked(self.panic_stealth_mode)
+        layout.addWidget(self.panic_stealth_checkbox)
+
+        layout.addSpacing(10)
+
         self.notifications_checkbox = QCheckBox("Показывать уведомления в статус-баре")
         self.notifications_checkbox.setChecked(self.notifications_enabled)
         layout.addWidget(self.notifications_checkbox)
@@ -606,14 +850,33 @@ class MainWindow(QMainWindow):
             else:
                 self.minimize_lock_mode = 'disabled'
             self.minimize_lock_delay_seconds = self.minimize_lock_delay_spin.value() * 60
+            self.security_profile = self.security_profile_combo.currentData()
+            self.auto_lock_timeout_seconds = self.auto_lock_spin.value() * 60
+            self.activity_sensitivity = self.activity_sensitivity_combo.currentData()
+            self.minimize_to_tray = self.minimize_to_tray_checkbox.isChecked()
+            self.start_minimized_to_tray = self.start_minimized_checkbox.isChecked()
+            self.panic_close_app = self.panic_close_checkbox.isChecked()
+            self.panic_stealth_mode = self.panic_stealth_checkbox.isChecked()
 
             settings = SettingsManager(self.current_db_path)
             settings.set_notification_enabled(self.notifications_enabled)
             settings.set_minimize_lock_mode(self.minimize_lock_mode)
             settings.set_minimize_lock_delay_seconds(self.minimize_lock_delay_seconds)
+            settings.set_security_profile(self.security_profile)
+            settings.set_auto_lock_timeout_seconds(self.auto_lock_timeout_seconds)
+            settings.set_activity_sensitivity(self.activity_sensitivity)
+            settings.set_bool('minimize_to_tray', self.minimize_to_tray)
+            settings.set_bool('start_minimized_to_tray', self.start_minimized_to_tray)
+            settings.set_bool('panic_close_app', self.panic_close_app)
+            settings.set_bool('panic_stealth_mode', self.panic_stealth_mode)
+            warnings = settings.validate_security_settings()
             settings.close()
+            self.apply_security_settings()
             if self.notifications_enabled:
-                self.status_bar.showMessage("Настройки сохранены", 2000)
+                message = "Настройки сохранены"
+                if warnings:
+                    message += f". Предупреждений: {len(warnings)}"
+                self.status_bar.showMessage(message, 3000)
 
     def change_timeout_dialog(self):
         from PySide6.QtWidgets import QInputDialog
@@ -637,7 +900,7 @@ class MainWindow(QMainWindow):
     def about(self):
         QMessageBox.information(
             self, "О программе",
-            "CryptoSafe Manager\nВерсия: 0.6.0 (Sprint 6)\n\nМенеджер паролей с открытым кодом"
+            "CryptoSafe Manager\nВерсия: 0.7.0 (Sprint 7)\n\nМенеджер паролей с открытым кодом"
         )
 
     def check_first_run(self):
@@ -738,6 +1001,8 @@ class MainWindow(QMainWindow):
     def lock_vault(self, reopen=True):
         if self.key_storage:
             self.key_storage.clear()
+        if self.key_manager:
+            self.key_manager.current_key = None
 
         # Очистка буфера обмена при блокировке
         if hasattr(self, 'clipboard_service'):
@@ -751,16 +1016,28 @@ class MainWindow(QMainWindow):
 
         self.entries_data = {}
         self.table.setRowCount(0)
+        self.entry_manager = None
+        self.master_password = None
+        if hasattr(self, 'db') and self.db:
+            try:
+                self.db.close()
+            except Exception as e:
+                print(f"Ошибка закрытия БД при блокировке: {e}")
+            self.db = None
         self.status_bar.showMessage("Статус: Хранилище заблокировано")
+        self.update_tray_state(False)
 
         if reopen and self.current_db_path:
-            self.open_file()
+            self.open_file(self.current_db_path)
 
     def check_inactivity(self):
         """Проверка неактивности и блокировка при необходимости"""
         if hasattr(self, 'key_storage') and self.key_storage:
-            if self.key_storage.is_locked():
-                self.lock_vault()
+            if self.pending_auto_lock or self.activity_monitor.get_idle_time() >= self.auto_lock_timeout_seconds:
+                self.pending_auto_lock = False
+                self.lock_vault(reopen=False)
+            elif self.key_storage.is_locked():
+                self.lock_vault(reopen=False)
 
     def handle_window_minimized(self):
         if not self.current_db_path or not self.key_storage:
@@ -772,6 +1049,7 @@ class MainWindow(QMainWindow):
 
         if self.minimize_lock_mode == 'immediate':
             print("Окно свёрнуто - блокируем хранилище сразу")
+            self.unlock_on_restore_pending = True
             self.lock_vault(reopen=False)
             return
 
@@ -786,9 +1064,55 @@ class MainWindow(QMainWindow):
             self.key_storage.update_activity()
 
     def lock_after_minimize_timeout(self):
-        if self.isMinimized() and self.minimize_lock_mode == 'delayed':
-            print("Истёк таймаут сворачивания - блокируем хранилище")
+        app = QCoreApplication.instance()
+        app_inactive = app and app.applicationState() != Qt.ApplicationActive
+        if (self.isMinimized() or app_inactive or not self.isVisible()) and self.minimize_lock_mode == 'delayed':
+            print("Истёк таймаут блокировки - блокируем хранилище")
+            self.unlock_on_restore_pending = True
+            if self.minimize_to_tray:
+                self.hide()
             self.lock_vault(reopen=False)
+
+
+    def unlock_after_restore_if_needed(self):
+        if not self.unlock_on_restore_pending:
+            return
+        if self.unlock_dialog_open:
+            return
+        if not self.current_db_path:
+            self.unlock_on_restore_pending = False
+            return
+        if self.isMinimized() or not self.isVisible():
+            return
+        if self.entry_manager is not None and self.master_password:
+            self.unlock_on_restore_pending = False
+            return
+
+        self.unlock_dialog_open = True
+        try:
+            if self.open_file(self.current_db_path):
+                self.unlock_on_restore_pending = False
+        finally:
+            self.unlock_dialog_open = False
+
+    def handle_application_inactive(self):
+        if not self.current_db_path or not self.key_storage or not self.entry_manager:
+            return
+        if self.unlock_on_restore_pending or self.unlock_dialog_open:
+            return
+        if self.minimize_lock_mode == 'disabled':
+            return
+
+        if self.minimize_lock_mode == 'immediate':
+            print("Приложение потеряло фокус - блокируем хранилище сразу")
+            self.unlock_on_restore_pending = True
+            if self.minimize_to_tray:
+                self.hide()
+            self.lock_vault(reopen=False)
+            return
+
+        self.minimize_lock_timer.start(self.minimize_lock_delay_seconds * 1000)
+        print(f"Приложение потеряло фокус - блокировка через {self.minimize_lock_delay_seconds} сек")
 
     def change_password(self):
         if not self.current_db_path:
@@ -807,12 +1131,11 @@ class MainWindow(QMainWindow):
 
         if state == Qt.ApplicationInactive:
             print("Приложение стало неактивным")
-            if hasattr(self, 'key_storage') and self.key_storage:
-                self.key_storage.update_activity()
-            else:
-                print("key_storage не существует")
+            self.handle_application_inactive()
         elif state == Qt.ApplicationActive:
             self.cancel_minimize_lock()
+            if self.isVisible():
+                QTimer.singleShot(0, self.unlock_after_restore_if_needed)
         else:
             print(f"Другое состояние: {state}")
 

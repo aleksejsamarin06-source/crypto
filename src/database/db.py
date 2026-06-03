@@ -82,6 +82,22 @@ class Database:
                        ('minimize_lock_mode', 'delayed'))
         cursor.execute("INSERT OR IGNORE INTO settings (setting_key, setting_value) VALUES (?, ?)",
                        ('minimize_lock_delay_seconds', '300'))
+        default_settings = {
+            'security_profile': 'standard',
+            'auto_lock_enabled': 'true',
+            'auto_lock_timeout_seconds': '300',
+            'activity_sensitivity': 'medium',
+            'device_type': 'desktop',
+            'side_channel_protection_enabled': 'true',
+            'secure_memory_enabled': 'true',
+            'panic_hotkey': 'Ctrl+Shift+Q',
+            'panic_close_app': 'false',
+            'panic_stealth_mode': 'false',
+            'minimize_to_tray': 'true',
+            'start_minimized_to_tray': 'false',
+        }
+        for key, value in default_settings.items():
+            cursor.execute("INSERT OR IGNORE INTO settings (setting_key, setting_value) VALUES (?, ?)", (key, value))
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS key_store (
@@ -157,7 +173,7 @@ class Database:
 
         self.conn.commit()
 
-        cursor.execute("PRAGMA user_version = 6")
+        cursor.execute("PRAGMA user_version = 7")
 
         print("Таблицы успешно созданы")
 

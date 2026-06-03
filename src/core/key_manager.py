@@ -2,11 +2,14 @@ import os
 import hashlib
 import binascii
 from src.core.vault.encryption_service import AESGCMEncryption
+from src.core.security.memory_guard import SecureMemory
+from src.core.security.side_channel_protection import ConstantTimeOps
 
 class KeyManager:
     def __init__(self):
         self.crypto = AESGCMEncryption()
         self.current_key = None
+        self.memory_guard = SecureMemory()
 
     def create_master_hash(self, password: str) -> str:
         """Создание хеша мастер-пароля для проверки"""
@@ -21,7 +24,7 @@ class KeyManager:
         original_key = stored[16:]
 
         test_key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
-        return test_key == original_key
+        return ConstantTimeOps.compare_bytes(test_key, original_key)
 
     def set_master_password(self, password: str):
         """Создание ключа из мастер-пароля (для шифрования записей)"""
@@ -54,16 +57,12 @@ class KeyManager:
     def secure_zero(self, data):
         """Затирание данных в памяти"""
         if isinstance(data, bytearray):
-            for i in range(len(data)):
-                data[i] = 0
+            self.memory_guard.wipe_bytearray(data)
         elif isinstance(data, bytes):
-            arr = bytearray(data)
-            for i in range(len(arr)):
-                arr[i] = 0
+            self.memory_guard.wipe_bytes_copy(data)
         elif isinstance(data, str):
             arr = bytearray(data.encode('utf-8'))
-            for i in range(len(arr)):
-                arr[i] = 0
+            self.memory_guard.wipe_bytearray(arr)
 
     def set_encryption_key(self, key: bytes):
         """Установка ключа шифрования"""

@@ -46,6 +46,7 @@ pip-wheel-metadata/
 # PyInstaller
 *.manifest
 *.spec
+!CryptoSafeManager.spec
 
 # Installer logs
 pip-log.txt

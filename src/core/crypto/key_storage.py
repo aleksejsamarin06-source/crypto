@@ -1,5 +1,6 @@
 import time
-from threading import Lock
+from threading import RLock
+from src.core.security.memory_guard import SecureMemory
 
 
 class KeyStorage:
@@ -7,8 +8,9 @@ class KeyStorage:
         self.encryption_key = None # хранение только в памяти, не на диске
         self.last_activity = 0
         self.is_unlocked = False
-        self.lock = Lock()
+        self.lock = RLock()
         self.timeout = 3600 # - время для устаревания час
+        self.memory_guard = SecureMemory()
 
     def store_key(self, key: bytes):
         """Сохранение ключа в памяти"""
@@ -41,8 +43,7 @@ class KeyStorage:
     def _secure_clear(self):
         """Безопасное затирание ключа"""
         if self.encryption_key:
-            for i in range(len(self.encryption_key)):
-                self.encryption_key[i] = 0 # тут ключ затирается нулями
+            self.memory_guard.wipe_bytearray(self.encryption_key)
             self.encryption_key = None
 
     def update_activity(self):

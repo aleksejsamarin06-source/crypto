@@ -1,0 +1,8 @@
+[run]
+omit =
+    src/check_log.py
+    src/core/clipboard/platform_adapter.py
+
+[report]
+fail_under = 80
+show_missing = True
