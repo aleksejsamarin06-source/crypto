@@ -161,6 +161,7 @@ class VaultImporter:
             "new": len(entries) - duplicates,
             "duplicate_strategy": duplicate_strategy,
             "preview": entries[:10],
+            "preview_entries": entries,
         }
 
     def _existing_by_title_url(self) -> Dict[str, int]:

@@ -21,11 +21,17 @@ class SharingService:
 
     def share_entry(self, entry_id: int, recipient: str, password: str = None,
                     public_key: bytes = None, permissions: Dict[str, Any] = None,
-                    expires_in_days: int = 7) -> Dict[str, Any]:
+                    expires_in_days: int = 7, expires_in_minutes: int = None) -> Dict[str, Any]:
         if not password and not public_key:
             raise ValueError("Sharing requires password or public_key")
-        if expires_in_days < 1 or expires_in_days > 30:
-            raise ValueError("Expiration must be between 1 and 30 days")
+        if expires_in_minutes is None:
+            if expires_in_days < 1 or expires_in_days > 30:
+                raise ValueError("Expiration must be between 1 and 30 days")
+            expires_delta = timedelta(days=expires_in_days)
+        else:
+            if expires_in_minutes < 1 or expires_in_minutes > 30 * 24 * 60:
+                raise ValueError("Expiration must be between 1 minute and 30 days")
+            expires_delta = timedelta(minutes=expires_in_minutes)
 
         entry = self.entry_manager.get_entry(int(entry_id))
         if not entry:
@@ -33,7 +39,7 @@ class SharingService:
 
         permissions = permissions or {"read": True, "edit": False}
         share_id = str(uuid.uuid4())
-        expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+        expires_at = datetime.now(timezone.utc) + expires_delta
         limited_entry = self._filter_entry(entry, permissions)
         payload = {
             "metadata": {
