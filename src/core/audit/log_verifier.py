@@ -53,6 +53,8 @@ class LogVerifier:
         results = {
             'total': len(rows),
             'valid_signatures': 0,
+            'checked_signatures': 0,
+            'missing_signatures': 0,
             'invalid_signatures': [],
             'chain_breaks': [],
             'is_valid': True
@@ -61,20 +63,34 @@ class LogVerifier:
         previous_hash = None
 
         for row in rows:
+            (db_seq_num, _timestamp, _event_type, _severity, _user_id,
+             _source, _entry_id, _details, db_previous_hash,
+             db_entry_hash, db_signature_hex) = row[:11]
+
             entry_data = self.reconstruct_entry_data(row)
-            seq_num = entry_data.get('sequence_number', 0)
-            stored_hash = entry_data.get('entry_hash', '')
-            prev_hash = entry_data.get('previous_hash', '')
-            signature_hex = entry_data.get('signature', '')
+            seq_num = entry_data.get('sequence_number', db_seq_num)
+            stored_hash = db_entry_hash or entry_data.get('entry_hash', '')
+            prev_hash = db_previous_hash or entry_data.get('previous_hash', '')
+            signature_hex = db_signature_hex or entry_data.get('signature', '')
 
             entry_json = json.dumps(
-                {k: v for k, v in entry_data.items() if k != 'signature'},
+                {k: v for k, v in entry_data.items() if k not in ['signature', 'entry_hash']},
                 sort_keys=True,
                 ensure_ascii=False
             ).encode('utf-8')
 
+            calculated_hash = hashlib.sha256(entry_json).hexdigest()
+            if calculated_hash != stored_hash:
+                results['chain_breaks'].append({
+                    'sequence': seq_num,
+                    'expected': stored_hash,
+                    'actual': calculated_hash
+                })
+                results['is_valid'] = False
+
             # Проверка подписи
             if self.signer and signature_hex:
+                results['checked_signatures'] += 1
                 try:
                     signature = bytes.fromhex(signature_hex)
                     if self.signer.verify(entry_json, signature):
@@ -86,7 +102,8 @@ class LogVerifier:
                     results['invalid_signatures'].append(seq_num)
                     results['is_valid'] = False
             else:
-                print(f" Запись {seq_num}: signer={self.signer is not None}, signature_hex={bool(signature_hex)}")
+                if not signature_hex:
+                    results['missing_signatures'] += 1
 
             # Проверка хеш-цепочки
             if previous_hash is not None and prev_hash != previous_hash:
@@ -116,14 +133,18 @@ class LogVerifier:
         results = {
             'total': len(rows),
             'valid_signatures': 0,
+            'checked_signatures': 0,
+            'missing_signatures': 0,
             'invalid_signatures': [],
             'is_valid': True
         }
 
         for row in rows:
+            db_seq_num = row[0]
+            db_signature_hex = row[10]
             entry_data = self.reconstruct_entry_data(row)
-            seq_num = entry_data.get('sequence_number', 0)
-            signature_hex = entry_data.get('signature', '')
+            seq_num = entry_data.get('sequence_number', db_seq_num)
+            signature_hex = db_signature_hex or entry_data.get('signature', '')
 
             entry_json = json.dumps(
                 {k: v for k, v in entry_data.items() if k not in ['signature', 'entry_hash']},
@@ -132,6 +153,7 @@ class LogVerifier:
             ).encode('utf-8')
 
             if self.signer and signature_hex:
+                results['checked_signatures'] += 1
                 try:
                     signature = bytes.fromhex(signature_hex)
                     if self.signer.verify(entry_json, signature):
@@ -142,6 +164,8 @@ class LogVerifier:
                 except:
                     results['invalid_signatures'].append(seq_num)
                     results['is_valid'] = False
+            elif not signature_hex:
+                results['missing_signatures'] += 1
 
         return results
 
@@ -183,7 +207,16 @@ class LogVerifier:
         report.append("ОТЧЁТ О ПРОВЕРКЕ ЦЕЛОСТНОСТИ ЛОГА")
         report.append("=" * 50)
         report.append(f"Всего записей: {result['total']}")
-        report.append(f"Подписи верны: {result['valid_signatures']}/{result['total']}")
+        if self.signer:
+            report.append(f"Проверено подписей: {result['checked_signatures']}")
+            if result['checked_signatures']:
+                report.append(f"Подписи верны: {result['valid_signatures']}/{result['checked_signatures']}")
+            else:
+                report.append("Подписи: нет подписанных записей для проверки")
+            if result['missing_signatures']:
+                report.append(f"Записей без подписи: {result['missing_signatures']}")
+        else:
+            report.append("Подписи: не проверялись (нет мастер-пароля)")
 
         if result['invalid_signatures']:
             report.append(f"\nНекорректные подписи: {result['invalid_signatures']}")

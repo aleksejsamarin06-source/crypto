@@ -26,6 +26,15 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtCore import QCoreApplication
 from src.gui.widgets.entry_dialog import EntryDialog
 from src.core.vault.entry_manager import EntryManager
+from src.gui.theme_manager import ThemeManager
+from enum import Enum
+
+
+class VaultLockState(Enum):
+    LOCKED = "locked"
+    UNLOCKED = "unlocked"
+    PENDING_UNLOCK = "pending_unlock"
+    PANIC = "panic"
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +77,11 @@ class MainWindow(QMainWindow):
         self.pending_auto_lock = False
         self.unlock_on_restore_pending = False
         self.unlock_dialog_open = False
+        self.app_theme = 'dark'
+        self.vault_state = VaultLockState.LOCKED
+        self.internal_dialog_depth = 0
+        self.force_quit_requested = False
+        ThemeManager.apply(self.app_theme)
         self.panic_mode = PanicMode()
         self.panic_mode.register_handler(self.handle_panic_response)
         self.activity_monitor = ActivityMonitor(self.request_auto_lock, self.security_config())
@@ -114,12 +128,13 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("Импорт", self.import_vault)
         file_menu.addAction("Экспорт", self.export_vault)
+        file_menu.addAction("Принять запись", self.accept_shared_entry)
         file_menu.addSeparator()
         file_menu.addAction("Резервная копия", self.backup)
         file_menu.addAction("Сменить пароль", self.change_password)
         file_menu.addSeparator()
         file_menu.addAction("Заблокировать", lambda: self.lock_vault())
-        file_menu.addAction("Выход", self.close)
+        file_menu.addAction("Выход", self.quit_application)
 
         edit_menu = menubar.addMenu("Правка")
         edit_menu.addAction("Добавить", self.add_entry)
@@ -157,10 +172,38 @@ class MainWindow(QMainWindow):
         tray_menu.addSeparator()
         tray_menu.addAction("Panic mode", lambda: self.activate_panic_mode("tray"))
         tray_menu.addAction("Настройки", self.show_settings)
-        tray_menu.addAction("Выход", self.close)
+        tray_menu.addAction("Выход", self.quit_application)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_activated)
         self.update_tray_state(False)
+
+    def suspend_auto_lock(self):
+        self.internal_dialog_depth += 1
+        if hasattr(self, 'minimize_lock_timer') and self.minimize_lock_timer.isActive():
+            self.minimize_lock_timer.stop()
+
+    def resume_auto_lock(self):
+        if self.internal_dialog_depth > 0:
+            self.internal_dialog_depth -= 1
+        if hasattr(self, 'key_storage') and self.key_storage:
+            self.key_storage.update_activity()
+
+    def exec_internal_dialog(self, dialog):
+        self.suspend_auto_lock()
+        try:
+            return dialog.exec()
+        finally:
+            self.resume_auto_lock()
+
+    def quit_application(self):
+        self.force_quit_requested = True
+        if hasattr(self, 'minimize_lock_timer') and self.minimize_lock_timer.isActive():
+            self.minimize_lock_timer.stop()
+        if hasattr(self, 'activity_monitor') and self.activity_monitor:
+            self.activity_monitor.stop_monitoring()
+        if hasattr(self, 'tray_icon') and self.tray_icon:
+            self.tray_icon.hide()
+        QCoreApplication.quit()
 
     def security_config(self):
         return {
@@ -204,6 +247,25 @@ class MainWindow(QMainWindow):
         tooltip = "CryptoSafe Manager - разблокировано" if unlocked else "CryptoSafe Manager - заблокировано"
         self.tray_icon.setToolTip(tooltip)
 
+    def set_vault_state(self, state: VaultLockState):
+        self.vault_state = state
+        if state == VaultLockState.PANIC:
+            self.tray_icon.setIcon(self.build_tray_icon("panic"))
+            self.tray_icon.setToolTip("CryptoSafe Manager - PANIC MODE")
+            if hasattr(self, 'tray_status_action'):
+                self.tray_status_action.setText("Статус: PANIC MODE")
+            return
+        if state == VaultLockState.UNLOCKED:
+            self.unlock_on_restore_pending = False
+            self.update_tray_state(True)
+            return
+        if state == VaultLockState.LOCKED:
+            self.unlock_on_restore_pending = False
+        self.update_tray_state(False)
+
+    def is_vault_unlocked(self) -> bool:
+        return self.vault_state == VaultLockState.UNLOCKED and self.entry_manager is not None
+
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:
             self.restore_from_tray()
@@ -220,7 +282,11 @@ class MainWindow(QMainWindow):
         if not self.entries_data:
             QMessageBox.information(self, "Поиск", "Сначала откройте хранилище")
             return
-        query, ok = QInputDialog.getText(self, "Быстрый поиск", "Введите название, логин, URL или категорию:")
+        self.suspend_auto_lock()
+        try:
+            query, ok = QInputDialog.getText(self, "Быстрый поиск", "Введите название, логин, URL или категорию:")
+        finally:
+            self.resume_auto_lock()
         if not ok:
             return
         self.restore_from_tray()
@@ -238,10 +304,7 @@ class MainWindow(QMainWindow):
         self.panic_mode.activate(method)
 
     def handle_panic_response(self, method):
-        self.tray_icon.setIcon(self.build_tray_icon("panic"))
-        self.tray_icon.setToolTip("CryptoSafe Manager - PANIC MODE")
-        if hasattr(self, 'tray_status_action'):
-            self.tray_status_action.setText("Статус: PANIC MODE")
+        self.set_vault_state(VaultLockState.PANIC)
         if hasattr(self, 'clipboard_service'):
             self.clipboard_service.clear()
         if self.key_storage:
@@ -431,7 +494,11 @@ class MainWindow(QMainWindow):
         edit_action = menu.addAction("Редактировать")
         delete_action = menu.addAction("Удалить")
 
-        action = menu.exec(self.table.viewport().mapToGlobal(position))
+        self.suspend_auto_lock()
+        try:
+            action = menu.exec(self.table.viewport().mapToGlobal(position))
+        finally:
+            self.resume_auto_lock()
 
         selected = self.table.selectedIndexes()
         if not selected:
@@ -508,11 +575,15 @@ class MainWindow(QMainWindow):
 
     def open_file(self, file_path=None):
         if file_path is None:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "Открыть базу данных",
-                os.path.expanduser("~"),
-                "Database files (*.db)"
-            )
+            self.suspend_auto_lock()
+            try:
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self, "Открыть базу данных",
+                    os.path.expanduser("~"),
+                    "Database files (*.db)"
+                )
+            finally:
+                self.resume_auto_lock()
 
         if file_path:
             print(f"Открываем файл: {file_path}")
@@ -523,7 +594,7 @@ class MainWindow(QMainWindow):
 
             login_dialog = LoginDialog(self, db)
 
-            if login_dialog.exec():
+            if self.exec_internal_dialog(login_dialog):
                 if hasattr(self, 'key_storage') and self.key_storage:
                     self.key_storage.update_activity()
 
@@ -575,7 +646,9 @@ class MainWindow(QMainWindow):
                 self.start_minimized_to_tray = settings.get_bool('start_minimized_to_tray', False)
                 self.panic_close_app = settings.get_bool('panic_close_app', False)
                 self.panic_stealth_mode = settings.get_bool('panic_stealth_mode', False)
+                self.app_theme = settings.get_app_theme()
                 settings.close()
+                ThemeManager.apply(self.app_theme)
                 self.apply_security_settings()
 
                 # Создаём сервис с загруженным таймаутом
@@ -597,7 +670,7 @@ class MainWindow(QMainWindow):
                     f"Статус: Открыта база {os.path.basename(file_path)} | Загружено {len(self.entries_data)} записей"
                 )
                 self.panic_mode.reset()
-                self.update_tray_state(True)
+                self.set_vault_state(VaultLockState.UNLOCKED)
                 if self.start_minimized_to_tray:
                     self.hide()
                 return True
@@ -608,11 +681,15 @@ class MainWindow(QMainWindow):
         return False
 
     def backup(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите базу данных для резервного копирования",
-            os.path.expanduser("~"),
-            "Database files (*.db)"
-        )
+        self.suspend_auto_lock()
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Выберите базу данных для резервного копирования",
+                os.path.expanduser("~"),
+                "Database files (*.db)"
+            )
+        finally:
+            self.resume_auto_lock()
         if file_path:
             backup_manager = BackupManager()
             backup_path = backup_manager.create_backup(file_path)
@@ -630,7 +707,7 @@ class MainWindow(QMainWindow):
             return
         from src.gui.widgets.export_dialog import ExportDialog
         dialog = ExportDialog(self, self.entry_manager, self.master_password)
-        dialog.exec()
+        self.exec_internal_dialog(dialog)
 
     def import_vault(self):
         if not self.entry_manager:
@@ -638,7 +715,7 @@ class MainWindow(QMainWindow):
             return
         from src.gui.widgets.import_dialog import ImportDialog
         dialog = ImportDialog(self, self.entry_manager)
-        if dialog.exec():
+        if self.exec_internal_dialog(dialog):
             self.entries_data = {entry["id"]: entry for entry in self.entry_manager.get_all_entries()}
             self.load_placeholder_data()
 
@@ -648,7 +725,86 @@ class MainWindow(QMainWindow):
             return
         from src.gui.widgets.share_dialog import ShareDialog
         dialog = ShareDialog(self, self.entry_manager, entry_id)
-        dialog.exec()
+        self.exec_internal_dialog(dialog)
+
+    def accept_shared_entry(self):
+        if not self.entry_manager:
+            QMessageBox.warning(self, "Ошибка", "Сначала откройте хранилище")
+            return
+
+        self.suspend_auto_lock()
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Выберите shared package",
+                os.path.expanduser("~"),
+                "JSON files (*.json);;All files (*)"
+            )
+        finally:
+            self.resume_auto_lock()
+        if not file_path:
+            return
+
+        try:
+            import json
+            with open(file_path, "r", encoding="utf-8") as file:
+                package = json.load(file)
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось прочитать файл:\n{exc}")
+            return
+
+        encryption_method = package.get("encryption", {}).get("method", "password")
+        password = None
+        private_key = None
+
+        if encryption_method == "public_key":
+            self.suspend_auto_lock()
+            try:
+                key_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Выберите приватный ключ",
+                    os.path.expanduser("~"),
+                    "PEM files (*.pem);;All files (*)"
+                )
+            finally:
+                self.resume_auto_lock()
+            if not key_path:
+                return
+            try:
+                with open(key_path, "rb") as key_file:
+                    private_key = key_file.read()
+            except Exception as exc:
+                QMessageBox.critical(self, "Ошибка ключа", f"Не удалось прочитать приватный ключ:\n{exc}")
+                return
+        else:
+            self.suspend_auto_lock()
+            try:
+                password, ok = QInputDialog.getText(
+                    self,
+                    "Пароль shared package",
+                    "Введите пароль для принятия записи:",
+                    QLineEdit.Password
+                )
+            finally:
+                self.resume_auto_lock()
+            if not ok or not password:
+                return
+
+        try:
+            from src.core.import_export.sharing_service import SharingService
+
+            service = SharingService(self.entry_manager)
+            result = service.import_shared_entry(package, password=password, private_key=private_key)
+            entry_id = result.get("entry_id")
+            if entry_id:
+                entry = self.entry_manager.get_entry(entry_id)
+                self.entries_data[entry_id] = entry
+            else:
+                self.entries_data = {entry["id"]: entry for entry in self.entry_manager.get_all_entries()}
+            self.load_placeholder_data()
+            QMessageBox.information(self, "Готово", "Запись успешно принята")
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка принятия записи", str(exc))
 
     def add_entry(self):
         dialog = EntryDialog(self, "Добавить запись")
@@ -710,7 +866,7 @@ class MainWindow(QMainWindow):
         logs = self.audit_manager.get_logs()
         dialog = AuditLogDialog(self, logs, self.current_db_path, self.master_password)
         dialog.entry_selected.connect(self.select_entry_by_id)
-        dialog.exec()
+        self.exec_internal_dialog(dialog)
 
     def select_entry_by_id(self, entry_id):
         """Выбор записи в таблице по ID"""
@@ -729,7 +885,7 @@ class MainWindow(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Настройки")
-        dialog.resize(460, 620)
+        dialog.resize(480, 680)
         layout = QVBoxLayout(dialog)
 
         layout.addWidget(QLabel("Буфер обмена"))
@@ -769,6 +925,17 @@ class MainWindow(QMainWindow):
         self.minimize_lock_checkbox.toggled.connect(update_minimize_controls)
         self.minimize_lock_mode_combo.currentIndexChanged.connect(update_minimize_controls)
         update_minimize_controls()
+
+        layout.addSpacing(10)
+
+        layout.addWidget(QLabel("Тема интерфейса"))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("Тёмная", 'dark')
+        self.theme_combo.addItem("Светлая", 'light')
+        self.theme_combo.addItem("Как в системе", 'system')
+        theme_index = {'dark': 0, 'light': 1, 'system': 2}.get(self.app_theme, 0)
+        self.theme_combo.setCurrentIndex(theme_index)
+        layout.addWidget(self.theme_combo)
 
         layout.addSpacing(10)
 
@@ -843,7 +1010,7 @@ class MainWindow(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
-        if dialog.exec():
+        if self.exec_internal_dialog(dialog):
             self.notifications_enabled = self.notifications_checkbox.isChecked()
             if self.minimize_lock_checkbox.isChecked():
                 self.minimize_lock_mode = self.minimize_lock_mode_combo.currentData()
@@ -857,6 +1024,7 @@ class MainWindow(QMainWindow):
             self.start_minimized_to_tray = self.start_minimized_checkbox.isChecked()
             self.panic_close_app = self.panic_close_checkbox.isChecked()
             self.panic_stealth_mode = self.panic_stealth_checkbox.isChecked()
+            self.app_theme = self.theme_combo.currentData()
 
             settings = SettingsManager(self.current_db_path)
             settings.set_notification_enabled(self.notifications_enabled)
@@ -869,8 +1037,10 @@ class MainWindow(QMainWindow):
             settings.set_bool('start_minimized_to_tray', self.start_minimized_to_tray)
             settings.set_bool('panic_close_app', self.panic_close_app)
             settings.set_bool('panic_stealth_mode', self.panic_stealth_mode)
+            settings.set_app_theme(self.app_theme)
             warnings = settings.validate_security_settings()
             settings.close()
+            ThemeManager.apply(self.app_theme)
             self.apply_security_settings()
             if self.notifications_enabled:
                 message = "Настройки сохранены"
@@ -900,7 +1070,10 @@ class MainWindow(QMainWindow):
     def about(self):
         QMessageBox.information(
             self, "О программе",
-            "CryptoSafe Manager\nВерсия: 0.7.0 (Sprint 7)\n\nМенеджер паролей с открытым кодом"
+            "CryptoSafe Manager\n"
+            "Версия: 0.8.0 (Sprint 8)\n"
+            "Автор: aleksejsamarin06-source\n\n"
+            "Локальный менеджер паролей с открытым кодом"
         )
 
     def check_first_run(self):
@@ -915,7 +1088,7 @@ class MainWindow(QMainWindow):
 
     def run_setup_wizard(self):
         wizard = SetupWizard(self)
-        if wizard.exec():
+        if self.exec_internal_dialog(wizard):
             db_path = wizard.db_path
             master_password = wizard.master_password
 
@@ -955,17 +1128,28 @@ class MainWindow(QMainWindow):
             )
 
             db.conn.commit()
-            db.close()
 
             self.current_db_path = db_path
+            self.master_password = master_password
+            self.key_manager.set_encryption_key(enc_key)
+            self.entry_manager = EntryManager(db, self.key_manager)
+            self.db = db
             self.entries_data = {}
             self.table.setRowCount(0)
+            self.set_vault_state(VaultLockState.UNLOCKED)
 
-            self.status_bar.showMessage(f"Статус: База создана {os.path.basename(db_path)}")
+            from src.core.audit.audit_logger import AuditLogger
+            self.audit_logger = AuditLogger(db, master_password)
+
+            from src.core.clipboard.clipboard_monitor import ClipboardMonitor
+            self.clipboard_monitor = ClipboardMonitor(self.clipboard_service)
+            self.clipboard_monitor.start_monitoring()
+
+            self.status_bar.showMessage(f"Статус: Открыта база {os.path.basename(db_path)} | Загружено 0 записей")
 
             QMessageBox.information(
                 self, "Готово",
-                "Хранилище успешно создано"
+                "Хранилище создано и открыто"
             )
 
     def check_log_integrity(self):
@@ -973,7 +1157,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'db') and self.db and hasattr(self, 'audit_logger'):
             from src.core.audit.log_verifier import LogVerifier
             try:
-                verifier = LogVerifier(self.db, None)
+                verifier = LogVerifier(self.db, self.master_password)
                 result = verifier.verify_range(0, 1000)  # проверяем последние 1000 записей
                 if not result['is_valid']:
                     self.status_bar.showMessage("Нарушена целостность журнала аудита!", 5000)
@@ -998,7 +1182,7 @@ class MainWindow(QMainWindow):
         if result == QMessageBox.Yes:
             self.lock_vault()
 
-    def lock_vault(self, reopen=True):
+    def lock_vault(self, reopen=True, pending_restore=False):
         if self.key_storage:
             self.key_storage.clear()
         if self.key_manager:
@@ -1025,13 +1209,16 @@ class MainWindow(QMainWindow):
                 print(f"Ошибка закрытия БД при блокировке: {e}")
             self.db = None
         self.status_bar.showMessage("Статус: Хранилище заблокировано")
-        self.update_tray_state(False)
+        self.unlock_on_restore_pending = pending_restore
+        self.set_vault_state(VaultLockState.PENDING_UNLOCK if pending_restore else VaultLockState.LOCKED)
 
         if reopen and self.current_db_path:
             self.open_file(self.current_db_path)
 
     def check_inactivity(self):
         """Проверка неактивности и блокировка при необходимости"""
+        if self.vault_state != VaultLockState.UNLOCKED:
+            return
         if hasattr(self, 'key_storage') and self.key_storage:
             if self.pending_auto_lock or self.activity_monitor.get_idle_time() >= self.auto_lock_timeout_seconds:
                 self.pending_auto_lock = False
@@ -1049,8 +1236,7 @@ class MainWindow(QMainWindow):
 
         if self.minimize_lock_mode == 'immediate':
             print("Окно свёрнуто - блокируем хранилище сразу")
-            self.unlock_on_restore_pending = True
-            self.lock_vault(reopen=False)
+            self.lock_vault(reopen=False, pending_restore=True)
             return
 
         self.minimize_lock_timer.start(self.minimize_lock_delay_seconds * 1000)
@@ -1068,14 +1254,13 @@ class MainWindow(QMainWindow):
         app_inactive = app and app.applicationState() != Qt.ApplicationActive
         if (self.isMinimized() or app_inactive or not self.isVisible()) and self.minimize_lock_mode == 'delayed':
             print("Истёк таймаут блокировки - блокируем хранилище")
-            self.unlock_on_restore_pending = True
             if self.minimize_to_tray:
                 self.hide()
-            self.lock_vault(reopen=False)
+            self.lock_vault(reopen=False, pending_restore=True)
 
 
     def unlock_after_restore_if_needed(self):
-        if not self.unlock_on_restore_pending:
+        if self.vault_state != VaultLockState.PENDING_UNLOCK and not self.unlock_on_restore_pending:
             return
         if self.unlock_dialog_open:
             return
@@ -1096,7 +1281,11 @@ class MainWindow(QMainWindow):
             self.unlock_dialog_open = False
 
     def handle_application_inactive(self):
+        if self.force_quit_requested or self.internal_dialog_depth > 0:
+            return
         if not self.current_db_path or not self.key_storage or not self.entry_manager:
+            return
+        if self.vault_state != VaultLockState.UNLOCKED:
             return
         if self.unlock_on_restore_pending or self.unlock_dialog_open:
             return
@@ -1105,10 +1294,9 @@ class MainWindow(QMainWindow):
 
         if self.minimize_lock_mode == 'immediate':
             print("Приложение потеряло фокус - блокируем хранилище сразу")
-            self.unlock_on_restore_pending = True
             if self.minimize_to_tray:
                 self.hide()
-            self.lock_vault(reopen=False)
+            self.lock_vault(reopen=False, pending_restore=True)
             return
 
         self.minimize_lock_timer.start(self.minimize_lock_delay_seconds * 1000)
@@ -1122,7 +1310,7 @@ class MainWindow(QMainWindow):
         from src.gui.widgets.change_password_dialog import ChangePasswordDialog
         dialog = ChangePasswordDialog(self, self.current_db_path, self.key_manager.current_key)
 
-        if dialog.exec():
+        if self.exec_internal_dialog(dialog):
             self.lock_vault()
 
     def on_application_state_changed(self, state):

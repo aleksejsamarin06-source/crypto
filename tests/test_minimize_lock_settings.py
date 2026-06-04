@@ -43,6 +43,19 @@ class TestMinimizeLockSettings(unittest.TestCase):
 
         settings.close()
 
+    def test_default_theme_settings(self):
+        settings = SettingsManager(self.db_path)
+
+        self.assertEqual(settings.get_app_theme(), 'dark')
+        settings.set_app_theme('light')
+        self.assertEqual(settings.get_app_theme(), 'light')
+        settings.set_app_theme('system')
+        self.assertEqual(settings.get_app_theme(), 'system')
+        settings.set_app_theme('bad-theme')
+        self.assertEqual(settings.get_app_theme(), 'dark')
+
+        settings.close()
+
 
 if __name__ == '__main__':
     unittest.main()

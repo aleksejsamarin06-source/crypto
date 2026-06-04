@@ -1,6 +1,7 @@
 import unittest
 import os
 import tempfile
+import json
 from src.core.audit.audit_logger import AuditLogger
 from src.core.audit.log_verifier import LogVerifier
 from src.database.db import Database
@@ -48,7 +49,11 @@ class TestAuditIntegrity(unittest.TestCase):
         original_data = row[1]
 
         # Изменяем запись
-        modified_data = original_data.replace('test_data_499', 'TAMPERED_DATA')
+        entry_data = json.loads(original_data)
+        details = json.loads(entry_data['details'])
+        details['data'] = 'TAMPERED_DATA'
+        entry_data['details'] = json.dumps(details, ensure_ascii=False)
+        modified_data = json.dumps(entry_data, sort_keys=True, ensure_ascii=False)
         cursor.execute("UPDATE audit_log SET entry_data = ? WHERE id = ?", (modified_data, entry_id))
         self.db.conn.commit()
 

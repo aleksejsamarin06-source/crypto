@@ -95,6 +95,7 @@ class Database:
             'panic_stealth_mode': 'false',
             'minimize_to_tray': 'true',
             'start_minimized_to_tray': 'false',
+            'app_theme': 'dark',
         }
         for key, value in default_settings.items():
             cursor.execute("INSERT OR IGNORE INTO settings (setting_key, setting_value) VALUES (?, ?)", (key, value))

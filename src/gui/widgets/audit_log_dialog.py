@@ -276,7 +276,7 @@ class AuditLogDialog(QDialog):
         db = Database(self.db_path)
         db.connect()
 
-        verifier = LogVerifier(db, None)
+        verifier = LogVerifier(db, self.master_password)
         report = verifier.get_verification_report()
 
         db.close()
@@ -351,7 +351,7 @@ class AuditLogDialog(QDialog):
         if self.db_path:
             db = Database(self.db_path)
             db.connect()
-            verifier = LogVerifier(db, None)
+            verifier = LogVerifier(db, self.master_password)
 
             # Проверяем конкретную запись
             cursor = db.conn.cursor()

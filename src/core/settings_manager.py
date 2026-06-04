@@ -5,6 +5,7 @@ class SettingsManager:
     MINIMIZE_LOCK_MODES = ('disabled', 'immediate', 'delayed')
     SECURITY_PROFILES = ('standard', 'enhanced', 'paranoid')
     ACTIVITY_SENSITIVITY = ('low', 'medium', 'high')
+    APP_THEMES = ('system', 'light', 'dark')
 
     def __init__(self, db_path: str):
         self.db = Database(db_path)
@@ -108,6 +109,15 @@ class SettingsManager:
         if sensitivity not in self.ACTIVITY_SENSITIVITY:
             sensitivity = 'medium'
         self.set('activity_sensitivity', sensitivity)
+
+    def get_app_theme(self) -> str:
+        theme = self.get('app_theme', 'dark')
+        return theme if theme in self.APP_THEMES else 'dark'
+
+    def set_app_theme(self, theme: str):
+        if theme not in self.APP_THEMES:
+            theme = 'dark'
+        self.set('app_theme', theme)
 
     def get_bool(self, key: str, default: bool = False) -> bool:
         return self.get(key, str(default).lower()) == 'true'

@@ -1,6 +1,6 @@
 # CryptoSafe Manager Test Report
 
-Generated: 2026-06-04T02:19:33
+Generated: 2026-06-04T04:23:33
 Exit code: 0
 Coverage: 82%
 
@@ -13,7 +13,7 @@ C:\Users\Lecoo\PycharmProjects\crypto\.venv\Scripts\python.exe -m pytest --cov=s
 ## Pytest Output
 
 ```text
-........s...............................................                 [100%]
+........s................................................                [100%]
 ============================== warnings summary ===============================
 tests/test_clipboard_integration.py: 2 warnings
 tests/test_entry_manager.py: 200 warnings
@@ -35,7 +35,7 @@ src\core\audit\__init__.py                               0      0   100%
 src\core\audit\audit_logger.py                         104     21    80%   23-36, 40, 75, 137, 144, 152, 158, 164
 src\core\audit\log_formatters.py                        72     24    67%   60, 71-100
 src\core\audit\log_signer.py                            42      1    98%   64
-src\core\audit\log_verifier.py                         107     23    79%   22-30, 81, 85-89, 93-98, 140-144, 155, 165, 173, 192, 211
+src\core\audit\log_verifier.py                         126     29    77%   22-30, 101-106, 110-115, 162-168, 179, 189, 197, 215, 217-219, 222, 225, 244
 src\core\clipboard\__init__.py                           0      0   100%
 src\core\clipboard\clipboard_service.py                 95     25    74%   13, 18-19, 49, 65-67, 82-84, 104-106, 109-116, 119, 122-124
 src\core\crypto\__init__.py                              0      0   100%
@@ -60,17 +60,17 @@ src\core\security\activity_monitor.py                   47      3    94%   27, 4
 src\core\security\memory_guard.py                       71     16    77%   18-19, 30-34, 40-44, 48, 51, 59, 65
 src\core\security\panic_mode.py                         25      4    84%   28-29, 34-35
 src\core\security\side_channel_protection.py            38      1    97%   31
-src\core\settings_manager.py                            85      3    96%   20, 95-96
+src\core\settings_manager.py                            93      3    97%   21, 96-97
 src\core\vault\__init__.py                               0      0   100%
 src\core\vault\encryption_service.py                    31      2    94%   15, 28
 src\core\vault\entry_manager.py                         70     11    84%   38-40, 58, 74, 102-104, 115-117
 src\core\vault\password_generator.py                    63      8    87%   21, 23, 52, 77-88
-src\database\db.py                                      90     26    71%   22, 182-199, 204, 212-221, 225-254
+src\database\db.py                                      90     26    71%   22, 183-200, 205, 213-222, 226-255
 ----------------------------------------------------------------------------------
-TOTAL                                                 1718    316    82%
+TOTAL                                                 1745    322    82%
 Coverage HTML written to dir tests/report/coverage_html
 Coverage JSON written to file tests/report/coverage.json
-Required test coverage of 80% reached. Total coverage: 81.61%
-55 passed, 1 skipped, 278 warnings in 14.99s
+Required test coverage of 80% reached. Total coverage: 81.55%
+56 passed, 1 skipped, 278 warnings in 15.21s
 
 ```
